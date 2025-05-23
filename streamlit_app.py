@@ -33,14 +33,21 @@ def load_data():
         conn.close()
         return rows
     except sqlite3.OperationalError:
-        return []  # Gracefully fallback if table doesn't exist
+        return []
 
 def run_scraper():
-    initialize_db()  # Ensure schema is ready
+    initialize_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
+    st.info("Contacting Google Places API...")
     results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
+
+    if not results:
+        st.warning("No places returned from Google Places. Check API key or location.")
+        return
+
+    added = 0
     for r in results:
         name = r['name']
         address = r.get('vicinity', '')
@@ -53,19 +60,24 @@ def run_scraper():
             text = fetch_website_text(website)
             if detect_prix_fixe(text):
                 cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
+                added += 1
     conn.commit()
     conn.close()
 
-# Always initialize DB first
+    if added:
+        st.success(f"{added} restaurants with prix fixe menus added.")
+    else:
+        st.info("Scraping completed but no prix fixe menus were found.")
+
+# Setup
 initialize_db()
 
-# Scrape button
+# Button
 if st.button("Scrape Restaurants"):
     run_scraper()
-    st.success("Scraping complete. Reloading results...")
     st.rerun()
 
-# Load and display data
+# Display
 results = load_data()
 if results:
     st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
