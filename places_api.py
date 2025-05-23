@@ -2,14 +2,13 @@ import requests
 import streamlit as st
 from settings import GOOGLE_API_KEY
 
-def find_restaurants(location, radius):
-    nearby_url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    details_url = "https://maps.googleapis.com/maps/api/place/details/json"
+def text_search_restaurants(location_name):
+    base_url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    detail_url = "https://maps.googleapis.com/maps/api/place/details/json"
+    query = f"restaurants in {location_name}"
 
     params = {
-        "location": location,
-        "radius": radius,
-        "type": "restaurant",
+        "query": query,
         "key": GOOGLE_API_KEY
     }
 
@@ -17,30 +16,30 @@ def find_restaurants(location, radius):
     seen_place_ids = set()
 
     while True:
-        response = requests.get(nearby_url, params=params)
+        response = requests.get(base_url, params=params)
         try:
             data = response.json()
         except Exception as e:
-            st.error(f"Failed to parse JSON: {e}")
+            st.error(f"Failed to parse Text Search response: {e}")
             break
 
-        for place in data.get("results", []):
-            place_id = place.get("place_id")
+        for result in data.get("results", []):
+            place_id = result.get("place_id")
             if not place_id or place_id in seen_place_ids:
                 continue
             seen_place_ids.add(place_id)
 
-            detail_params = {
+            details_params = {
                 "place_id": place_id,
                 "fields": "name,vicinity,website",
                 "key": GOOGLE_API_KEY
             }
 
             try:
-                detail_response = requests.get(details_url, params=detail_params)
+                detail_response = requests.get(detail_url, params=details_params)
                 details = detail_response.json().get("result", {})
             except Exception as e:
-                st.warning(f"Details failed for {place_id}: {e}")
+                st.warning(f"Failed to fetch details for place_id={place_id}: {e}")
                 continue
 
             website = details.get("website", "")
@@ -51,14 +50,14 @@ def find_restaurants(location, radius):
                     "website": website
                 })
             else:
-                st.warning(f"[INFO] No website listed for: {details.get('name', 'Unknown')} ({details.get('vicinity', '')})")
+                st.warning(f"[TextSearch] No website for: {details.get('name', 'Unknown')} ({details.get('vicinity', '')})")
 
-        # Pagination support
+        # handle pagination
         next_page_token = data.get("next_page_token")
         if not next_page_token:
             break
         import time
-        time.sleep(2)  # Required delay for token activation
+        time.sleep(2)  # wait before using next page token
         params["pagetoken"] = next_page_token
 
     return final_results
