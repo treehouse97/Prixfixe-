@@ -2,7 +2,8 @@ import streamlit as st
 import sqlite3
 from scraper import fetch_website_text, detect_prix_fixe
 from places_api import find_restaurants
-from settings import DEFAULT_LOCATION, SEARCH_RADIUS_METERS
+from settings import GOOGLE_API_KEY, DEFAULT_LOCATION, SEARCH_RADIUS_METERS
+import requests
 import os
 
 DB_FILE = "prix_fixe.db"
@@ -47,6 +48,22 @@ def load_prix_fixe_restaurants():
     conn.close()
     return results
 
+# --- Geocoding ---
+def geocode_location(place_name):
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {"address": place_name, "key": GOOGLE_API_KEY}
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data["status"] == "OK":
+            location = data["results"][0]["geometry"]["location"]
+            return f"{location['lat']},{location['lng']}"
+        else:
+            st.error(f"Geocoding failed: {data['status']}")
+    except Exception as e:
+        st.error(f"Error geocoding location: {e}")
+    return None
+
 # --- App UI ---
 st.title("Prix Fixe Menu Finder")
 
@@ -60,48 +77,36 @@ if st.button("Initialize Database"):
     init_db()
     st.success("Database initialized.")
 
-if st.button("Scrape Restaurants"):
-    try:
-        raw_places = find_restaurants(DEFAULT_LOCATION, SEARCH_RADIUS_METERS)
-        enriched = []
-        for place in raw_places:
-            name = place.get("name", "")
-            address = place.get("vicinity", "")
-            website = place.get("website", "")
-            has_prix_fixe = 0
-            if website:
-                text = fetch_website_text(website)
-                if detect_prix_fixe(text):
-                    has_prix_fixe = 1
-            enriched.append((name, address, has_prix_fixe))
-        store_restaurants(enriched)
-        st.success("Restaurants scraped and stored.")
-    except Exception as e:
-        st.error(f"Failed to store data: {e}")
-
-# Manual Entry Form
-st.subheader("Add a Restaurant Manually")
-with st.form("manual_entry"):
-    manual_name = st.text_input("Restaurant Name")
-    manual_address = st.text_input("Address")
-    manual_url = st.text_input("Website URL")
-    submitted = st.form_submit_button("Add Restaurant")
-    if submitted:
+st.subheader("Search Area")
+user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
+if st.button("Scrape Restaurants in Area"):
+    latlng = geocode_location(user_location)
+    if latlng:
         try:
-            text = fetch_website_text(manual_url)
-            has_prix_fixe = int(detect_prix_fixe(text))
-            store_restaurants([(manual_name, manual_address, has_prix_fixe)])
-            st.success(f"Manually added {manual_name} (Prix Fixe: {'Yes' if has_prix_fixe else 'No'})")
+            raw_places = find_restaurants(latlng, SEARCH_RADIUS_METERS)
+            enriched = []
+            for place in raw_places:
+                name = place.get("name", "")
+                address = place.get("vicinity", "")
+                website = place.get("website", "")
+                has_prix_fixe = 0
+                if website:
+                    text = fetch_website_text(website)
+                    if detect_prix_fixe(text):
+                        has_prix_fixe = 1
+                enriched.append((name, address, has_prix_fixe))
+            store_restaurants(enriched)
+            st.success("Restaurants scraped and stored.")
         except Exception as e:
-            st.error(f"Failed to add manually: {e}")
+            st.error(f"Failed to store data: {e}")
 
-# Output Results
 try:
     restaurants = load_prix_fixe_restaurants()
     if restaurants:
+        st.subheader("Detected Prix Fixe Menus")
         for name, address in restaurants:
             st.markdown(f"**{name}** - {address}, Prix Fixe: Yes")
     else:
-        st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' or use manual entry.")
+        st.info("No prix fixe menus found yet. Use the search bar to begin.")
 except Exception as e:
     st.error(f"Failed to load data: {e}")
