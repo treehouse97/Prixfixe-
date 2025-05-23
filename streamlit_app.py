@@ -3,6 +3,7 @@ import sqlite3
 from scraper import fetch_website_text, detect_prix_fixe
 from places_api import find_restaurants
 from settings import DEFAULT_LOCATION, SEARCH_RADIUS_METERS
+import os
 
 DB_FILE = "prix_fixe.db"
 
@@ -23,6 +24,10 @@ def init_db():
     conn.commit()
     conn.close()
 
+def ensure_db():
+    if not os.path.exists(DB_FILE):
+        init_db()
+
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -37,17 +42,15 @@ def store_restaurants(restaurants):
 def load_prix_fixe_restaurants():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""
-        SELECT name, address FROM restaurants
-        WHERE has_prix_fixe = 1
-        ORDER BY name
-    """)
+    c.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
     results = c.fetchall()
     conn.close()
     return results
 
 # --- App UI ---
 st.title("Prix Fixe Menu Finder")
+
+ensure_db()
 
 if st.button("Reset Database"):
     init_db()
@@ -76,12 +79,29 @@ if st.button("Scrape Restaurants"):
     except Exception as e:
         st.error(f"Failed to store data: {e}")
 
+# Manual Entry Form
+st.subheader("Add a Restaurant Manually")
+with st.form("manual_entry"):
+    manual_name = st.text_input("Restaurant Name")
+    manual_address = st.text_input("Address")
+    manual_url = st.text_input("Website URL")
+    submitted = st.form_submit_button("Add Restaurant")
+    if submitted:
+        try:
+            text = fetch_website_text(manual_url)
+            has_prix_fixe = int(detect_prix_fixe(text))
+            store_restaurants([(manual_name, manual_address, has_prix_fixe)])
+            st.success(f"Manually added {manual_name} (Prix Fixe: {'Yes' if has_prix_fixe else 'No'})")
+        except Exception as e:
+            st.error(f"Failed to add manually: {e}")
+
+# Output Results
 try:
     restaurants = load_prix_fixe_restaurants()
     if restaurants:
         for name, address in restaurants:
             st.markdown(f"**{name}** - {address}, Prix Fixe: Yes")
     else:
-        st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' to begin.")
+        st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' or use manual entry.")
 except Exception as e:
     st.error(f"Failed to load data: {e}")
