@@ -1,4 +1,4 @@
-    import sqlite3
+import sqlite3
 import streamlit as st
 from scraper import fetch_website_text, detect_prix_fixe
 from places_api import find_restaurants
