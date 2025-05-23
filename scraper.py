@@ -20,7 +20,6 @@ def fetch_website_text(url):
             href = a["href"]
             full_url = urljoin(url, href)
             domain = urlparse(full_url).netloc
-
             if domain != base_domain or full_url in visited:
                 continue
 
@@ -51,7 +50,6 @@ def detect_prix_fixe_detailed(text):
         "fixed menu": r"(fixed|set)[ -]?menu",
         "tasting menu": r"tasting\s+menu"
     }
-
     for label, pattern in patterns.items():
         if re.search(pattern, text, re.IGNORECASE):
             return True, label
