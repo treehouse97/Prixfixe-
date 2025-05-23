@@ -66,6 +66,7 @@ def detect_prix_fixe_detailed(text):
     patterns = {
         "prix fixe": r"prix[\s\-]*fixe",
         "pre fixe": r"pre[\s\-]*fixe",
+        "price fixed": r"price[\s\-]*fixed",
         "3-course": r"(three|3)[\s\-]*(course|courses)",
         "multi-course": r"\d+\s*course\s*meal",
         "fixed menu": r"(fixed|set)[\s\-]*(menu|meal)",
