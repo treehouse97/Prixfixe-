@@ -2,14 +2,13 @@ import streamlit as st
 import sqlite3
 import os
 import requests
-
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
 DB_FILE = "prix_fixe.db"
 
-# --------- Database setup ---------
+# ---------------- Database ----------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -20,8 +19,7 @@ def init_db():
             name TEXT,
             address TEXT,
             website TEXT,
-            has_prix_fixe INTEGER,
-            raw_text TEXT,
+            match_type TEXT,
             UNIQUE(name, address)
         )
     """)
@@ -37,10 +35,7 @@ def store_restaurants(restaurants):
     c = conn.cursor()
     for r in restaurants:
         try:
-            c.execute("""
-                INSERT OR IGNORE INTO restaurants (name, address, website, has_prix_fixe, raw_text)
-                VALUES (?, ?, ?, ?, ?)
-            """, r)
+            c.execute("INSERT OR IGNORE INTO restaurants (name, address, website, match_type) VALUES (?, ?, ?, ?)", r)
         except Exception as e:
             print(f"Insert failed for {r}: {e}")
     conn.commit()
@@ -49,12 +44,12 @@ def store_restaurants(restaurants):
 def load_all_restaurants():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, address, website, has_prix_fixe FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
+    c.execute("SELECT name, address, website, match_type FROM restaurants ORDER BY name")
     results = c.fetchall()
     conn.close()
     return results
 
-# --------- Geocoding ---------
+# ---------------- Geocoding ----------------
 def geocode_location(place_name):
     url = "https://maps.googleapis.com/maps/api/geocode/json"
     params = {"address": place_name, "key": GOOGLE_API_KEY}
@@ -70,8 +65,8 @@ def geocode_location(place_name):
         st.error(f"Error geocoding location: {e}")
     return None
 
-# --------- Streamlit Interface ---------
-st.title("The Fixe")
+# ---------------- Streamlit UI ----------------
+st.title("Prix Fixe Menu Finder")
 ensure_db()
 
 if st.button("Reset Database"):
@@ -85,49 +80,39 @@ if st.button("Scrape Restaurants in Area"):
     try:
         raw_places = text_search_restaurants(user_location)
         enriched = []
-
         for place in raw_places:
             name = place.get("name", "")
             address = place.get("vicinity", "")
             website = place.get("website", "")
-
-            # Check cache
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
-            result = c.fetchone()
-            conn.close()
-
-            if result:
-                st.info(f"Cached: {name} - {'Yes' if result[0] else 'No'}")
-                continue
-
+            match_type = ""
             if website:
                 text = fetch_website_text(website)
                 matched, label = detect_prix_fixe_detailed(text)
                 if matched:
-                    enriched.append((name, address, website, 1, text))
+                    match_type = label
                     st.success(f"{name}: Match found ({label})")
                 else:
                     st.warning(f"{name}: No prix fixe found.")
+            else:
+                st.warning(f"[TextSearch] No website for: {name} ({address})")
 
-        if enriched:
-            store_restaurants(enriched)
-            st.success("New results saved.")
-        else:
-            st.info("No new matches to store.")
+            enriched.append((name, address, website, match_type))
 
+        store_restaurants(enriched)
+        st.success("Restaurants scraped and stored.")
     except Exception as e:
-        st.error(f"Scrape failed: {e}")
+        st.error(f"Failed to store data: {e}")
 
-# --------- Display Results ---------
+# ---------------- Results ----------------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Detected Prix Fixe Menus")
-        for name, address, website, _ in all_restaurants:
-            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
+        st.subheader("All Detected Restaurants")
+        for name, address, website, match_type in all_restaurants:
+            status = f"Match found ({match_type})" if match_type else "No prix fixe found"
+            color = "green" if match_type else "yellow"
+            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})  \n**Result**: {status}")
     else:
-        st.info("No prix fixe menus stored yet.")
+        st.info("No restaurants found. Use the search above to start.")
 except Exception as e:
-    st.error(f"Failed to load results: {e}")
+    st.error(f"Failed to load data: {e}")
