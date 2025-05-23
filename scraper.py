@@ -74,7 +74,10 @@ def detect_prix_fixe_detailed(text):
         "special menu": r"special\s*(menu|offer|deal)",
         "complete lunch": r"complete\s*(lunch|dinner)\s*special",
         "lunch special": r"(lunch|dinner)\s*special\s*(menu|offer)?",
-        "pre-fixe typo": r"pre[\s\-]*fix(e)?"
+        "specials": r"(today'?s|weekday|weekend)?\s*specials",
+        "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
+        "combo deal": r"(combo|combination)\s*(deal|meal|menu)",
+        "value menu": r"value\s*(menu|deal|offer)"
     }
 
     for label, pattern in patterns.items():
