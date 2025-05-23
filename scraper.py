@@ -2,14 +2,26 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
+import mimetypes
+from io import BytesIO
+import fitz  # PyMuPDF
 
 def fetch_website_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         base_resp = requests.get(url, headers=headers, timeout=10)
         base_resp.raise_for_status()
-        soup = BeautifulSoup(base_resp.text, 'html.parser')
 
+        content_type = base_resp.headers.get("Content-Type", "").lower()
+        if "pdf" in content_type or url.lower().endswith(".pdf"):
+            # Handle direct PDF link
+            doc = fitz.open(stream=base_resp.content, filetype="pdf")
+            pdf_text = ""
+            for page in doc:
+                pdf_text += page.get_text()
+            return pdf_text.lower()
+
+        soup = BeautifulSoup(base_resp.text, 'html.parser')
         sections = soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
         all_text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
 
@@ -26,12 +38,21 @@ def fetch_website_text(url):
             try:
                 sub_resp = requests.get(full_url, headers=headers, timeout=10)
                 sub_resp.raise_for_status()
-                sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
-                sub_text = " ".join(
-                    s.get_text(" ", strip=True).lower()
-                    for s in sub_soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
-                )
-                all_text += " " + sub_text
+
+                content_type = sub_resp.headers.get("Content-Type", "").lower()
+                if "pdf" in content_type or full_url.lower().endswith(".pdf"):
+                    # Handle linked PDF
+                    doc = fitz.open(stream=sub_resp.content, filetype="pdf")
+                    for page in doc:
+                        all_text += " " + page.get_text().lower()
+                else:
+                    sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
+                    sub_text = " ".join(
+                        s.get_text(" ", strip=True).lower()
+                        for s in sub_soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+                    )
+                    all_text += " " + sub_text
+
                 visited.add(full_url)
             except Exception:
                 continue
