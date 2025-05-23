@@ -50,10 +50,13 @@ def run_scraper():
     cursor = conn.cursor()
 
     added = 0
-    for r in results:
+    max_to_process = 5  # Limit to avoid long scraping sessions
+    for i, r in enumerate(results[:max_to_process]):
         name = r['name']
         address = r.get('vicinity', '')
         website = r.get('website', '')
+
+        st.write(f"Scraping: {name} – {website or 'No website found'}")
 
         if website:
             cursor.execute("INSERT INTO restaurants (name, address, website) VALUES (?, ?, ?)",
@@ -63,13 +66,11 @@ def run_scraper():
             if detect_prix_fixe(text):
                 cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
                 added += 1
+
     conn.commit()
     conn.close()
 
-    if added:
-        st.markdown(f"**{added} restaurants with prix fixe menus added.**")
-    else:
-        st.markdown("Scraping completed but no prix fixe menus were found.")
+    st.success(f"{added} restaurants with prix fixe menus added.")
 
 # Always initialize DB
 initialize_db()
