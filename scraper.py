@@ -1,38 +1,50 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import re
 
 def fetch_website_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+        base_resp = requests.get(url, headers=headers, timeout=10)
+        base_resp.raise_for_status()
+        soup = BeautifulSoup(base_resp.text, 'html.parser')
 
-        # Base page content
+        # Start with homepage content
         sections = soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
-        text_content = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
+        all_text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
 
-        # Look for menu-related subpages
-        links = soup.find_all("a", href=True)
-        for link in links:
-            href = link["href"]
-            if any(kw in href.lower() for kw in ["menu", "prix", "lunch", "dinner"]):
-                sub_url = href if href.startswith("http") else urljoin(url, href)
-                try:
-                    sub_resp = requests.get(sub_url, headers=headers, timeout=10)
-                    sub_resp.raise_for_status()
-                    sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
-                    sub_text = " ".join(s.get_text(" ", strip=True).lower()
-                                        for s in sub_soup.find_all(["h1", "h2", "h3", "p", "li", "div"]))
-                    text_content += " " + sub_text
-                except Exception as e:
-                    print(f"Failed to fetch subpage {sub_url}: {e}")
+        # Extract base domain to validate internal links
+        base_domain = urlparse(url).netloc
 
-        print(f"--- Final Text for {url} ---")
-        print(text_content[:1000])
-        return text_content
+        visited = set()
+        visited.add(url)
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            full_url = urljoin(url, href)
+            domain = urlparse(full_url).netloc
+
+            if domain != base_domain or full_url in visited:
+                continue  # skip external or already-visited links
+
+            try:
+                sub_resp = requests.get(full_url, headers=headers, timeout=10)
+                sub_resp.raise_for_status()
+                sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
+                sub_text = " ".join(
+                    s.get_text(" ", strip=True).lower()
+                    for s in sub_soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+                )
+                all_text += " " + sub_text
+                visited.add(full_url)
+            except Exception as e:
+                print(f"Skipped {full_url}: {e}")
+
+        print(f"--- Combined Text for {url} ---")
+        print(all_text[:1000])
+        return all_text
+
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         return ""
