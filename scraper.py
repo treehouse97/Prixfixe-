@@ -1,70 +1,82 @@
-# scraper.py  ── improved static crawler with menu-link focus and noise filter
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
 from collections import Counter
 
-# ---------- helpers ---------------------------------------------------------
-def _extract_visible_text(soup) -> str:
-    """Return visible lowercase text from common content tags."""
+# ----------------------------
+def _extract_visible_text(soup):
+    """Extracts visible text from semantic content tags only."""
     return " ".join(
         el.get_text(" ", strip=True).lower()
-        for el in soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+        for el in soup.find_all(["h1", "h2", "h3", "p", "li", "section", "article"])
+        if el.get_text(strip=True)
     )
 
-def _deduplicate_noise(text: str, min_repeats: int = 4) -> str:
-    """Remove words/lines that appear too frequently (boiler-plate)."""
+def _deduplicate_noise(text, min_repeats=3):
     tokens = text.split()
-    common = {tok for tok, cnt in Counter(tokens).items() if cnt >= min_repeats}
-    return " ".join(tok for tok in tokens if tok not in common)
+    common = {tok for tok, count in Counter(tokens).items() if count >= min_repeats}
+    filtered = " ".join(tok for tok in tokens if tok not in common)
+    return filtered
 
-# ---------- main fetch ------------------------------------------------------
-def fetch_website_text(url: str) -> str:
-    """
-    Crawl `url` plus internal pages whose <a href> contains 'menu'
-    and return a cleaned, deduplicated text blob suitable for keyword search.
-    """
+def _strip_known_noise(text):
+    noise_phrases = [
+        r"toggle navigation",
+        r"tab start navigating",
+        r"content starts here",
+        r"meet team",
+        r"press to (pause|play)",
+        r"slide \d+ of \d+",
+    ]
+    for pattern in noise_phrases:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return text
+
+# ----------------------------
+def fetch_website_text(url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    visited, aggregate_text = set(), ""
+    visited, combined = set(), ""
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
     except Exception as e:
         print(f"[ERROR] {url}: {e}")
         return ""
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    aggregate_text += _extract_visible_text(soup)
-    visited.add(url)
-
     base_domain = urlparse(url).netloc
+    visited.add(url)
+    combined += _extract_visible_text(soup)
 
-    # follow only menu-related internal links
+    # follow internal menu-related links only
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if "menu" not in href.lower():          # focus crawl
+        if "menu" not in href.lower():
             continue
-
-        full = urljoin(url, href)
-        if urlparse(full).netloc != base_domain or full in visited:
+        full_url = urljoin(url, href)
+        if urlparse(full_url).netloc != base_domain or full_url in visited:
             continue
 
         try:
-            sub = requests.get(full, headers=headers, timeout=10)
-            sub.raise_for_status()
-            sub_soup = BeautifulSoup(sub.text, "html.parser")
-            aggregate_text += " " + _extract_visible_text(sub_soup)
-            visited.add(full)
+            sub_resp = requests.get(full_url, headers=headers, timeout=10)
+            sub_resp.raise_for_status()
+            sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
+            combined += " " + _extract_visible_text(sub_soup)
+            visited.add(full_url)
         except Exception as sub_e:
-            print(f"   ├─ skipped {full[:60]}…  ({sub_e})")
+            print(f"[SKIP] {full_url[:60]}... ({sub_e})")
 
-    cleaned = _deduplicate_noise(aggregate_text)
+    cleaned = _deduplicate_noise(combined, min_repeats=3)
+    cleaned = _strip_known_noise(cleaned)
+    print(f"[SCRAPED] {url}\n{text_preview(cleaned)}")
     return cleaned
 
-# ---------- prix-fixe detector ---------------------------------------------
-def detect_prix_fixe(text: str) -> bool:
+def text_preview(text, chars=600):
+    return text[:chars] + ("..." if len(text) > chars else "")
+
+# ----------------------------
+def detect_prix_fixe(text):
     patterns = [
         r"prix\s*fixe",
         r"\$\s*\d+\s*(prix\s*fixe)?",
