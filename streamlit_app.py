@@ -1,7 +1,7 @@
 import sqlite3
 import streamlit as st
 
-DB_PATH = "data/prix_fixe.db"
+DB_PATH = "prix_fixe.db"
 
 st.title("Prix Fixe Menu Finder")
 
