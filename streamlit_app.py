@@ -4,7 +4,7 @@ import requests
 
 # Constants
 DB_PATH = "prix_fixe.db"
-GOOGLE_PLACES_API_KEY = st.secrets["AIzaSyApX2q-0DaM5xqJGGyiyFA6gkRe7rRxaeM"]  # Set this in .streamlit/secrets.toml
+GOOGLE_PLACES_API_KEY = st.secrets"AIzaSyApX2q-0DaM5xqJGGyiyFA6gkRe7rRxaeM"  # Set this in .streamlit/secrets.toml
 
 # --- Database Setup ---
 def init_db():
