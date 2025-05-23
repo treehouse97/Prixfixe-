@@ -25,62 +25,53 @@ def initialize_db():
     conn.close()
 
 def load_data():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1")
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
-    except sqlite3.OperationalError:
-        return []
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 def run_scraper():
-    initialize_db()
-    st.info("Contacting Google Places API...")
-    results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
-
-    st.markdown(f"**Raw restaurant count from Google: {len(results)}**")
-
-    if not results:
-        st.error("No places returned from Google. API key may be invalid or location is unreachable.")
-        return
-
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    added = 0
-    max_to_process = 5  # Limit to avoid long scraping sessions
-    for i, r in enumerate(results[:max_to_process]):
-        name = r['name']
-        address = r.get('vicinity', '')
-        website = r.get('website', '')
+    st.info("Contacting Google Places API...")
+    results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
 
-        st.write(f"Scraping: {name} – {website or 'No website found'}")
+    st.subheader("Nearby Search Raw Response:")
+    st.json(results)
+
+    raw_places = results.get("results", [])
+    st.text(f"Raw restaurant count from Google: {len(raw_places)}")
+
+    for r in raw_places:
+        name = r.get("name")
+        address = r.get("vicinity", "")
+        website = r.get("website", "")
+
+        # Show all names regardless of website for debug
+        st.text(f"Found: {name} - {website if website else 'No website'}")
 
         if website:
             cursor.execute("INSERT INTO restaurants (name, address, website) VALUES (?, ?, ?)",
                            (name, address, website))
             restaurant_id = cursor.lastrowid
-            text = fetch_website_text(website)
-            if detect_prix_fixe(text):
-                cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
-                added += 1
-
+            try:
+                text = fetch_website_text(website)
+                if detect_prix_fixe(text):
+                    cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
+            except Exception as e:
+                st.warning(f"Scrape error for {name}: {e}")
     conn.commit()
     conn.close()
 
-    st.success(f"{added} restaurants with prix fixe menus added.")
-
-# Always initialize DB
 initialize_db()
 
-# Scrape Button
 if st.button("Scrape Restaurants"):
     run_scraper()
-    st.rerun()
+    st.success("Scraping complete. See below.")
 
-# Display Data
 results = load_data()
 if results:
     st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
