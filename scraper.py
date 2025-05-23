@@ -14,8 +14,7 @@ def fetch_website_text(url):
         all_text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
 
         base_domain = urlparse(url).netloc
-        visited = set()
-        visited.add(url)
+        visited = {url}
 
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -35,33 +34,25 @@ def fetch_website_text(url):
                 )
                 all_text += " " + sub_text
                 visited.add(full_url)
-            except Exception as e:
-                print(f"Skipped {full_url}: {e}")
+            except Exception:
+                continue
 
         return all_text
-
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         return ""
 
 def detect_prix_fixe_detailed(text):
     patterns = {
-        r"\bprix\s*fixe\b": "prix fixe",
-        r"\$\s*\d+\s*(prix\s*fixe)?": "dollar prix fixe",
-        r"(three|3)[ -]course": "three-course",
-        r"(four|4)[ -]course": "four-course",
-        r"(five|5)[ -]course": "five-course",
-        r"(set|fixed)[ -]menu": "set/fixed menu",
-        r"\btasting\s+menu\b": "tasting menu",
-        r"\bchef'?s\s+tasting\b": "chef's tasting",
-        r"pre\s*fix(?:ed)?": "pre fix",
-        r"\b(lunch|dinner)\s+special\b": "meal special",
-        r"\bmenu\s+du\s+jour\b": "menu du jour",
-        r"\bprix\s+menu\b": "prix menu",
-        r"\bdegustation\b": "degustation"
+        "prix fixe": r"prix\s*fixe",
+        "pre fixe": r"pre\s*fixe",
+        "3-course": r"(three|3)[ -]course",
+        "special menu": r"special\s+menu",
+        "fixed menu": r"(fixed|set)[ -]?menu",
+        "tasting menu": r"tasting\s+menu"
     }
 
-    for pattern, label in patterns.items():
+    for label, pattern in patterns.items():
         if re.search(pattern, text, re.IGNORECASE):
             return True, label
-    return False, None
+    return False, ""
