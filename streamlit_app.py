@@ -24,8 +24,6 @@ def initialize_db():
     conn.commit()
     conn.close()
 
-initialize_db()  # Make sure table exists before anything else
-
 def load_data():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -38,14 +36,12 @@ def run_scraper():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Fetch from Google Places
     results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
     for r in results:
         name = r['name']
         address = r.get('vicinity', '')
         website = r.get('website', '')
 
-        # Only insert if website is present
         if website:
             cursor.execute("INSERT INTO restaurants (name, address, website) VALUES (?, ?, ?)",
                            (name, address, website))
@@ -53,18 +49,20 @@ def run_scraper():
             text = fetch_website_text(website)
             if detect_prix_fixe(text):
                 cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
-        conn.commit()
+    conn.commit()
     conn.close()
 
-# Run setup
+# Always initialize the DB on first load
 initialize_db()
 
 # Scrape button
 if st.button("Scrape Restaurants"):
+    initialize_db()  # Ensure table exists
     run_scraper()
     st.success("Scraping complete. Reloading results...")
+    st.rerun()
 
-# Display results
+# Load and display results
 results = load_data()
 if results:
     st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
