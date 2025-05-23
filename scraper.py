@@ -3,50 +3,64 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
 
-try:
-    from playwright.sync_api import sync_playwright
-    JS_ENABLED = True
-except ImportError:
-    JS_ENABLED = False
-    print("[Warning] Playwright not available. JS-rendered content will be skipped.")
-
 def fetch_website_text(url):
     try:
-        if JS_ENABLED:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(url, timeout=20000)
-                page.wait_for_timeout(3000)
-                html = page.content()
-                browser.close()
-        else:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            resp = requests.get(url, headers=headers, timeout=10)
-            resp.raise_for_status()
-            html = resp.text
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        base_resp = requests.get(url, headers=headers, timeout=10)
+        base_resp.raise_for_status()
+        soup = BeautifulSoup(base_resp.text, 'html.parser')
 
-        soup = BeautifulSoup(html, "html.parser")
+        # Start with homepage content
         sections = soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
-        text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
-        return text
+        all_text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
+
+        # Extract base domain to validate internal links
+        base_domain = urlparse(url).netloc
+        visited = set()
+        visited.add(url)
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            full_url = urljoin(url, href)
+            domain = urlparse(full_url).netloc
+
+            if domain != base_domain or full_url in visited:
+                continue  # skip external or already-visited links
+
+            try:
+                sub_resp = requests.get(full_url, headers=headers, timeout=10)
+                sub_resp.raise_for_status()
+                sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
+                sub_text = " ".join(
+                    s.get_text(" ", strip=True).lower()
+                    for s in sub_soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+                )
+                all_text += " " + sub_text
+                visited.add(full_url)
+            except Exception as e:
+                print(f"Skipped {full_url}: {e}")
+
+        print(f"--- Combined Text for {url} ---")
+        print(all_text[:1000])
+        return all_text
 
     except Exception as e:
-        print(f"Failed to fetch or parse {url}: {e}")
+        print(f"Error fetching {url}: {e}")
         return ""
 
-def detect_prix_fixe(text):
+def detect_prix_fixe(text, log=False):
     patterns = [
-        r"prix\\s*fixe",
-        r"\\$\\s*\\d+\\s*(prix\\s*fixe)?",
+        r"prix\s*fixe",
+        r"\$\s*\d+\s*(prix\s*fixe)?",
         r"(three|3)[ -]course",
         r"(fixed|set)[ -]?menu",
-        r"tasting\\s+menu"
+        r"tasting\s+menu"
     ]
-    for pattern in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            print(f"[Detection] Matched pattern: {pattern}")
+    for p in patterns:
+        if re.search(p, text, re.IGNORECASE):
+            if log:
+                print(f"[Pattern Match] Found with pattern: {p}")
             return True
-    print("[Detection] No patterns matched.")
-    print(text[:1000])  # Optional for debugging
+    if log:
+        print("[Pattern Match] No match found.")
     return False
