@@ -1,79 +1,75 @@
+# scraper.py  ── improved static crawler with menu-link focus and noise filter
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
+from collections import Counter
 
-from playwright.sync_api import sync_playwright
+# ---------- helpers ---------------------------------------------------------
+def _extract_visible_text(soup) -> str:
+    """Return visible lowercase text from common content tags."""
+    return " ".join(
+        el.get_text(" ", strip=True).lower()
+        for el in soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+    )
 
-def fetch_website_text(url):
-    def extract_text_from_soup(soup):
-        return " ".join(s.get_text(" ", strip=True).lower()
-                        for s in soup.find_all(["h1", "h2", "h3", "p", "li", "div"]))
+def _deduplicate_noise(text: str, min_repeats: int = 4) -> str:
+    """Remove words/lines that appear too frequently (boiler-plate)."""
+    tokens = text.split()
+    common = {tok for tok, cnt in Counter(tokens).items() if cnt >= min_repeats}
+    return " ".join(tok for tok in tokens if tok not in common)
+
+# ---------- main fetch ------------------------------------------------------
+def fetch_website_text(url: str) -> str:
+    """
+    Crawl `url` plus internal pages whose <a href> contains 'menu'
+    and return a cleaned, deduplicated text blob suitable for keyword search.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    visited, aggregate_text = set(), ""
 
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        base_resp = requests.get(url, headers=headers, timeout=10)
-        base_resp.raise_for_status()
-        soup = BeautifulSoup(base_resp.text, 'html.parser')
-
-        base_text = extract_text_from_soup(soup)
-        visited = set()
-        visited.add(url)
-
-        base_domain = urlparse(url).netloc
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            full_url = urljoin(url, href)
-            domain = urlparse(full_url).netloc
-
-            if domain != base_domain or full_url in visited:
-                continue
-
-            try:
-                sub_resp = requests.get(full_url, headers=headers, timeout=10)
-                sub_resp.raise_for_status()
-                sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
-                base_text += " " + extract_text_from_soup(sub_soup)
-                visited.add(full_url)
-            except Exception as e:
-                print(f"Skipped {full_url}: {e}")
-
-        if not base_text.strip() or "prix" not in base_text:
-            print(f"Static scrape weak, retrying with Playwright for {url}")
-            base_text = fetch_with_playwright(url)
-
-        print(f"--- Combined Text for {url} ---")
-        print(base_text[:1000])
-        return base_text
-
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
+        print(f"[ERROR] {url}: {e}")
         return ""
 
-def fetch_with_playwright(url):
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, timeout=20000)
-            page.wait_for_timeout(3000)
-            html = page.content()
-            browser.close()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    aggregate_text += _extract_visible_text(soup)
+    visited.add(url)
 
-        soup = BeautifulSoup(html, "html.parser")
-        return " ".join(s.get_text(" ", strip=True).lower()
-                        for s in soup.find_all(["h1", "h2", "h3", "p", "li", "div"]))
+    base_domain = urlparse(url).netloc
 
-    except Exception as e:
-        print(f"Playwright failed for {url}: {e}")
-        return ""
+    # follow only menu-related internal links
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "menu" not in href.lower():          # focus crawl
+            continue
 
-def detect_prix_fixe(text):
+        full = urljoin(url, href)
+        if urlparse(full).netloc != base_domain or full in visited:
+            continue
+
+        try:
+            sub = requests.get(full, headers=headers, timeout=10)
+            sub.raise_for_status()
+            sub_soup = BeautifulSoup(sub.text, "html.parser")
+            aggregate_text += " " + _extract_visible_text(sub_soup)
+            visited.add(full)
+        except Exception as sub_e:
+            print(f"   ├─ skipped {full[:60]}…  ({sub_e})")
+
+    cleaned = _deduplicate_noise(aggregate_text)
+    return cleaned
+
+# ---------- prix-fixe detector ---------------------------------------------
+def detect_prix_fixe(text: str) -> bool:
     patterns = [
         r"prix\s*fixe",
         r"\$\s*\d+\s*(prix\s*fixe)?",
-        r"(three|3)[ -]course",
-        r"(fixed|set)[ -]?menu",
-        r"tasting\s+menu"
+        r"(three|3)\s*[- ]\s*course",
+        r"(fixed|set)\s*[- ]?\s*menu",
+        r"tasting\s+menu",
     ]
     return any(re.search(p, text, re.IGNORECASE) for p in patterns)
