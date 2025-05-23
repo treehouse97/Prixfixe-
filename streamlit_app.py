@@ -1,11 +1,10 @@
 import streamlit as st
 import sqlite3
+import requests
 from typing import List, Tuple
 
-# Secure API key retrieval
-GOOGLE_PLACES_API_KEY = st.secrets["api"]["GOOGLE_PLACES_API_KEY"]
-
-# DB setup
+# WARNING: This is insecure for production environments.
+GOOGLE_PLACES_API_KEY = "AIzaSyApX2q-0DaM5xqJGGyiyFA6gkRe7rRxaeM"
 DB_NAME = "prix_fixe.db"
 
 def init_db():
@@ -24,13 +23,31 @@ def init_db():
     conn.close()
     st.success("Database initialized.")
 
-def scrape_mock_restaurants() -> List[Tuple[str, str, float, bool]]:
-    # Mock data for demonstration
-    return [
-        ("Le Gourmet", "123 Main St", 4.5, True),
-        ("Chez Nous", "789 Oak St", 4.8, True),
-        ("Taco Spot", "456 Elm St", 4.2, False),
-    ]
+def scrape_restaurants() -> List[Tuple[str, str, float, bool]]:
+    location = "40.745,-73.994"  # Example: Midtown Manhattan
+    radius = 1500
+    type_ = "restaurant"
+    url = (
+        f"https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        f"?location={location}&radius={radius}&type={type_}&key={GOOGLE_PLACES_API_KEY}"
+    )
+
+    response = requests.get(url)
+    if response.status_code != 200:
+        st.error("Failed to fetch data from Google Places API.")
+        return []
+
+    data = response.json()
+    results = []
+    for r in data.get("results", []):
+        name = r.get("name", "Unknown")
+        address = r.get("vicinity", "Unknown")
+        rating = r.get("rating", 0.0)
+        # Simulate logic to identify prix fixe (e.g., keyword in name or types)
+        has_prix_fixe = "prix" in name.lower() or "gourmet" in name.lower()
+        results.append((name, address, rating, has_prix_fixe))
+
+    return results
 
 def store_restaurants(restaurants: List[Tuple[str, str, float, bool]]):
     conn = sqlite3.connect(DB_NAME)
@@ -61,9 +78,12 @@ if st.button("Initialize Database"):
     init_db()
 
 if st.button("Scrape Restaurants"):
-    data = scrape_mock_restaurants()
-    store_restaurants(data)
-    st.success("Restaurants scraped and stored.")
+    data = scrape_restaurants()
+    if data:
+        store_restaurants(data)
+        st.success(f"{len(data)} restaurants scraped and stored.")
+    else:
+        st.warning("No data was scraped.")
 
 restaurants = load_prix_fixe_restaurants()
 if restaurants:
