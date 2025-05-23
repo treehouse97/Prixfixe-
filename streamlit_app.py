@@ -1,82 +1,82 @@
-import sqlite3
 import streamlit as st
-from scraper import fetch_website_text, detect_prix_fixe
-from places_api import find_restaurants
-from settings import DEFAULT_LOCATION, SEARCH_RADIUS_METERS
+import sqlite3
+import requests
+import time
 
 DB_PATH = "prix_fixe.db"
-
-st.title("Prix Fixe Menu Finder")
 
 def initialize_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    # Check for 'has_prix_fixe' column and recreate table if missing
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='restaurants'")
+    table_exists = cursor.fetchone()
+
+    if table_exists:
+        cursor.execute("PRAGMA table_info(restaurants)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'has_prix_fixe' not in columns:
+            st.warning("Updating database schema...")
+            cursor.execute("DROP TABLE IF EXISTS restaurants")
+
+    # Create table with correct schema
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS restaurants (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        address TEXT,
-        website TEXT,
-        scraped INTEGER DEFAULT 0,
-        has_prix_fixe INTEGER DEFAULT 0
-    )
+        CREATE TABLE IF NOT EXISTS restaurants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT,
+            price_level INTEGER,
+            rating REAL,
+            has_prix_fixe BOOLEAN
+        )
     """)
     conn.commit()
     conn.close()
     st.success("Database initialized.")
 
-def load_data():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1")
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
-    except sqlite3.OperationalError as e:
-        st.error(f"Failed to load data: {e}")
-        return []
-
-def run_scraper():
+def insert_restaurant(data):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
-    st.info("Contacting Google Places API...")
-    results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
-
-    st.write("Nearby Search Raw Response:", results)
-
-    raw_places = results.get("results", [])
-    st.write(f"Raw restaurant count from Google: {len(raw_places)}")
-
-    for r in raw_places:
-        name = r.get('name')
-        address = r.get('vicinity', '')
-        website = r.get('website', '')
-
-        if website:
-            cursor.execute("INSERT INTO restaurants (name, address, website) VALUES (?, ?, ?)",
-                           (name, address, website))
-            restaurant_id = cursor.lastrowid
-            text = fetch_website_text(website)
-            if detect_prix_fixe(text):
-                cursor.execute("UPDATE restaurants SET has_prix_fixe = 1 WHERE id = ?", (restaurant_id,))
-        conn.commit()
+    cursor.execute("""
+        INSERT INTO restaurants (name, address, price_level, rating, has_prix_fixe)
+        VALUES (?, ?, ?, ?, ?)
+    """, data)
+    conn.commit()
     conn.close()
 
-# Initialization
+def fetch_restaurants():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM restaurants WHERE has_prix_fixe = 1")
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError as e:
+        st.error(f"Failed to load data: {e}")
+        rows = []
+    conn.close()
+    return rows
+
+def simulate_scrape():
+    sample_data = [
+        ("Le Gourmet", "123 Main St", 2, 4.5, True),
+        ("Bistro du Coin", "456 Elm St", 1, 4.0, False),
+        ("Chez Nous", "789 Oak St", 3, 4.8, True),
+    ]
+    for restaurant in sample_data:
+        insert_restaurant(restaurant)
+        time.sleep(0.5)
+
+st.title("Prix Fixe Menu Finder")
+
 initialize_db()
 
-# Scrape button
 if st.button("Scrape Restaurants"):
-    run_scraper()
-    st.success("Scraping complete. Reloading results...")
+    simulate_scrape()
 
-# Display data
-results = load_data()
-if results:
-    st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
-    for name, address in results:
-        st.markdown(f"**{name}**  \n{address}")
+restaurants = fetch_restaurants()
+if restaurants:
+    for r in restaurants:
+        st.write(f"**{r[1]}** - {r[2]}, Rating: {r[4]}, Prix Fixe: {'Yes' if r[5] else 'No'}")
 else:
     st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' to begin.")
