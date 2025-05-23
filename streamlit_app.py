@@ -35,7 +35,10 @@ def store_restaurants(restaurants):
     c = conn.cursor()
     for r in restaurants:
         try:
-            c.execute("INSERT OR IGNORE INTO restaurants (name, address, website, match_type) VALUES (?, ?, ?, ?)", r)
+            c.execute("""
+                INSERT OR IGNORE INTO restaurants (name, address, website, match_type)
+                VALUES (?, ?, ?, ?)
+            """, r)
         except Exception as e:
             print(f"Insert failed for {r}: {e}")
     conn.commit()
@@ -73,6 +76,10 @@ if st.button("Reset Database"):
     init_db()
     st.success("Database reset.")
 
+if st.button("Initialize Database"):
+    init_db()
+    st.success("Database initialized.")
+
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
@@ -85,16 +92,21 @@ if st.button("Scrape Restaurants in Area"):
             address = place.get("vicinity", "")
             website = place.get("website", "")
             match_type = ""
+
             if website:
                 text = fetch_website_text(website)
-                matched, label = detect_prix_fixe_detailed(text)
-                if matched:
-                    match_type = label
-                    st.success(f"{name}: Match found ({label})")
+
+                if detect_prix_fixe_detailed:
+                    match, match_type = detect_prix_fixe_detailed(text)
+
+                if "bayberry" in website.lower():
+                    st.subheader("Bayberry Text Debug")
+                    st.code(text[:2000], language="text")
+
+                if match_type:
+                    st.success(f"{name}: Match found ({match_type})")
                 else:
                     st.warning(f"{name}: No prix fixe found.")
-            else:
-                st.warning(f"[TextSearch] No website for: {name} ({address})")
 
             enriched.append((name, address, website, match_type))
 
@@ -106,13 +118,16 @@ if st.button("Scrape Restaurants in Area"):
 # ---------------- Results ----------------
 try:
     all_restaurants = load_all_restaurants()
-    if all_restaurants:
-        st.subheader("All Detected Restaurants")
-        for name, address, website, match_type in all_restaurants:
-            status = f"Match found ({match_type})" if match_type else "No prix fixe found"
-            color = "green" if match_type else "yellow"
-            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})  \n**Result**: {status}")
+    matched_restaurants = [r for r in all_restaurants if r[3]]  # Only include those with a match_type
+    if matched_restaurants:
+        st.subheader("Matched Restaurants")
+        for name, address, website, match_type in matched_restaurants:
+            st.markdown(
+                f"**{name}** - {address}  \n"
+                f"[Visit Site]({website})  \n"
+                f"**Result**: Match found ({match_type})"
+            )
     else:
-        st.info("No restaurants found. Use the search above to start.")
+        st.info("No matching restaurants found.")
 except Exception as e:
     st.error(f"Failed to load data: {e}")
