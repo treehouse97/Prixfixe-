@@ -71,7 +71,7 @@ def geocode_location(place_name):
     return None
 
 # --------- Streamlit Interface ---------
-st.title("Prix Fixe Menu Finder")
+st.title("The Fixe")
 ensure_db()
 
 if st.button("Reset Database"):
