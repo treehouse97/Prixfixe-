@@ -2,87 +2,51 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
-from collections import Counter
 
-def _extract_visible_text(soup):
-    """Extract visible text from relevant semantic content tags."""
-    return " ".join(
-        el.get_text(" ", strip=True).lower()
-        for el in soup.find_all(["h1", "h2", "h3", "p", "li", "section", "article"])
-        if el.get_text(strip=True)
-    )
-
-def _deduplicate_noise(text, min_repeats=3):
-    tokens = text.split()
-    common = {tok for tok, count in Counter(tokens).items() if count >= min_repeats}
-    return " ".join(tok for tok in tokens if tok not in common)
-
-def _strip_known_noise(text):
-    patterns = [
-        r"toggle navigation",
-        r"tab start navigating",
-        r"content starts here",
-        r"meet team",
-        r"press to (pause|play)",
-        r"slide \d+ of \d+",
-    ]
-    for pat in patterns:
-        text = re.sub(pat, "", text, flags=re.IGNORECASE)
-    return text
-
-def text_preview(text, chars=600):
-    return text[:chars] + ("..." if len(text) > chars else "")
+try:
+    from playwright.sync_api import sync_playwright
+    JS_ENABLED = True
+except ImportError:
+    JS_ENABLED = False
+    print("[Warning] Playwright not available. JS-rendered content will be skipped.")
 
 def fetch_website_text(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    visited, combined = set(), ""
-
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        if JS_ENABLED:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(url, timeout=20000)
+                page.wait_for_timeout(3000)
+                html = page.content()
+                browser.close()
+        else:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            html = resp.text
+
+        soup = BeautifulSoup(html, "html.parser")
+        sections = soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+        text = " ".join(s.get_text(" ", strip=True).lower() for s in sections)
+        return text
+
     except Exception as e:
-        print(f"[ERROR] {url}: {e}")
+        print(f"Failed to fetch or parse {url}: {e}")
         return ""
 
-    base_domain = urlparse(url).netloc
-    visited.add(url)
-    combined += _extract_visible_text(soup)
-
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "menu" not in href.lower():
-            continue
-        full_url = urljoin(url, href)
-        if urlparse(full_url).netloc != base_domain or full_url in visited:
-            continue
-        try:
-            sub_resp = requests.get(full_url, headers=headers, timeout=10)
-            sub_resp.raise_for_status()
-            sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
-            combined += " " + _extract_visible_text(sub_soup)
-            visited.add(full_url)
-        except Exception as sub_e:
-            print(f"[SKIP] {full_url[:60]}... ({sub_e})")
-
-    cleaned = _deduplicate_noise(combined, min_repeats=3)
-    cleaned = _strip_known_noise(cleaned)
-    print(f"[SCRAPED] {url}\n{text_preview(cleaned)}")
-    return cleaned
-
-def detect_prix_fixe(text, log=False):
+def detect_prix_fixe(text):
     patterns = [
-        r"prix\s*fixe",
-        r"\$\s*\d+\s*(prix\s*fixe)?",
-        r"(three|3)\s*[- ]\s*course",
-        r"(fixed|set)\s*[- ]?\s*menu",
-        r"tasting\s+menu",
+        r"prix\\s*fixe",
+        r"\\$\\s*\\d+\\s*(prix\\s*fixe)?",
+        r"(three|3)[ -]course",
+        r"(fixed|set)[ -]?menu",
+        r"tasting\\s+menu"
     ]
-    for p in patterns:
-        if re.search(p, text, re.IGNORECASE):
-            if log:
-                print(f"[MATCH] Pattern matched: {p}")
+    for pattern in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            print(f"[Detection] Matched pattern: {pattern}")
             return True
-    if log:
-        print("[NO MATCH] No prix fixe keywords found.")
+    print("[Detection] No patterns matched.")
+    print(text[:1000])  # Optional for debugging
     return False
