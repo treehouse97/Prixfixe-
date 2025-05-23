@@ -37,15 +37,17 @@ def load_data():
 
 def run_scraper():
     initialize_db()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
     st.info("Contacting Google Places API...")
     results = find_restaurants(location=DEFAULT_LOCATION, radius=SEARCH_RADIUS_METERS)
 
+    st.markdown(f"**Raw restaurant count from Google: {len(results)}**")
+
     if not results:
-        st.warning("No places returned from Google Places. Check API key or location.")
+        st.error("No places returned from Google. API key may be invalid or location is unreachable.")
         return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
     added = 0
     for r in results:
@@ -65,19 +67,19 @@ def run_scraper():
     conn.close()
 
     if added:
-        st.success(f"{added} restaurants with prix fixe menus added.")
+        st.markdown(f"**{added} restaurants with prix fixe menus added.**")
     else:
-        st.info("Scraping completed but no prix fixe menus were found.")
+        st.markdown("Scraping completed but no prix fixe menus were found.")
 
-# Setup
+# Always initialize DB
 initialize_db()
 
-# Button
+# Scrape Button
 if st.button("Scrape Restaurants"):
     run_scraper()
     st.rerun()
 
-# Display
+# Display Data
 results = load_data()
 if results:
     st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
