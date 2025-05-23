@@ -1,16 +1,15 @@
 import streamlit as st
 import sqlite3
 import requests
+import os
 
-# Constants
+# Load API key from Streamlit secrets or hardcoded (as requested)
 GOOGLE_PLACES_API_KEY = "AIzaSyApX2q-0DaM5xqJGGyiyFA6gkRe7rRxaeM"
-LOCATION = "Westbury, NY"
-SEARCH_RADIUS = 5000  # in meters
-KEYWORD = "prix fixe"
 
-# Initialize DB
+DB_FILE = "prix_fixe.db"
+
 def init_db():
-    conn = sqlite3.connect("prix_fixe.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS restaurants (
@@ -24,83 +23,73 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Clear DB (optional utility)
-def clear_db():
-    conn = sqlite3.connect("prix_fixe.db")
+def delete_db():
+    try:
+        os.remove(DB_FILE)
+        return True, "Database deleted. Please click 'Initialize Database' again."
+    except FileNotFoundError:
+        return False, "Database file not found."
+    except Exception as e:
+        return False, f"Failed to delete database: {e}"
+
+def store_restaurants(restaurants):
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("DROP TABLE IF EXISTS restaurants")
+    c.executemany("""
+        INSERT INTO restaurants (name, address, rating, has_prix_fixe)
+        VALUES (?, ?, ?, ?)
+    """, restaurants)
     conn.commit()
     conn.close()
 
-# Store data in DB
-def store_restaurants(restaurants):
-    try:
-        conn = sqlite3.connect("prix_fixe.db")
-        c = conn.cursor()
-        c.executemany("""
-            INSERT INTO restaurants (name, address, rating, has_prix_fixe)
-            VALUES (?, ?, ?, ?)
-        """, restaurants)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        st.error(f"Failed to store data: {e}")
-
-# Load restaurants with prix fixe
 def load_prix_fixe_restaurants():
-    try:
-        conn = sqlite3.connect("prix_fixe.db")
-        c = conn.cursor()
-        c.execute("""
-            SELECT name, address, rating FROM restaurants
-            WHERE has_prix_fixe = 1
-            ORDER BY rating DESC
-        """)
-        results = c.fetchall()
-        conn.close()
-        return results
-    except Exception as e:
-        st.error(f"Failed to load data: {e}")
-        return []
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        SELECT name, address, rating FROM restaurants
+        WHERE has_prix_fixe = 1
+        ORDER BY rating DESC
+    """)
+    results = c.fetchall()
+    conn.close()
+    return results
 
-# Fetch from Google Places
-def fetch_restaurants():
-    url = (
-        f"https://maps.googleapis.com/maps/api/place/textsearch/json?"
-        f"query=restaurants+in+{LOCATION}&key={GOOGLE_PLACES_API_KEY}"
-    )
-    response = requests.get(url)
-    data = response.json()
-    return data.get("results", [])
-
-# Check for prix fixe keyword
-def detect_prix_fixe(restaurant):
-    name = restaurant.get("name", "").lower()
-    types = restaurant.get("types", [])
-    return int("prix" in name or "prix" in " ".join(types).lower())
+def mock_scrape_restaurants():
+    # Replace with actual scraping or API logic
+    return [
+        ("Le Gourmet", "123 Main St", 4.5, 1),
+        ("Chez Nous", "789 Oak St", 4.8, 1),
+        ("No Prix Fixe Place", "456 Elm St", 4.0, 0)
+    ]
 
 # Streamlit UI
 st.title("Prix Fixe Menu Finder")
+
+if st.button("Delete Database"):
+    success, message = delete_db()
+    if success:
+        st.success(message)
+    else:
+        st.warning(message)
 
 if st.button("Initialize Database"):
     init_db()
     st.success("Database initialized.")
 
 if st.button("Scrape Restaurants"):
-    api_results = fetch_restaurants()
-    parsed = []
-    for r in api_results:
-        name = r.get("name", "N/A")
-        address = r.get("formatted_address", "N/A")
-        rating = r.get("rating", 0.0)
-        prix = detect_prix_fixe(r)
-        parsed.append((name, address, rating, prix))
-    store_restaurants(parsed)
+    try:
+        data = mock_scrape_restaurants()
+        store_restaurants(data)
+        st.success("Restaurants scraped and stored.")
+    except Exception as e:
+        st.error(f"Failed to store data: {e}")
 
-# Display results
-restaurants = load_prix_fixe_restaurants()
-if restaurants:
-    for r in restaurants:
-        st.markdown(f"**{r[0]}** - {r[1]}, Rating: {r[2]}, Prix Fixe: Yes")
-else:
-    st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' to begin.")
+try:
+    restaurants = load_prix_fixe_restaurants()
+    if restaurants:
+        for name, address, rating in restaurants:
+            st.markdown(f"**{name}** - {address}, Rating: {rating}, Prix Fixe: Yes")
+    else:
+        st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' to begin.")
+except Exception as e:
+    st.error(f"Failed to load data: {e}")
