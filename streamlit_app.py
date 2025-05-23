@@ -40,10 +40,10 @@ def store_restaurants(restaurants):
     conn.commit()
     conn.close()
 
-def load_prix_fixe_restaurants():
+def load_all_restaurants():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
+    c.execute("SELECT name, address, has_prix_fixe FROM restaurants ORDER BY name")
     results = c.fetchall()
     conn.close()
     return results
@@ -100,13 +100,14 @@ if st.button("Scrape Restaurants in Area"):
         except Exception as e:
             st.error(f"Failed to store data: {e}")
 
+# Display results
 try:
-    restaurants = load_prix_fixe_restaurants()
-    if restaurants:
-        st.subheader("Detected Prix Fixe Menus")
-        for name, address in restaurants:
-            st.markdown(f"**{name}** - {address}, Prix Fixe: Yes")
+    all_restaurants = load_all_restaurants()
+    if all_restaurants:
+        st.subheader("All Detected Restaurants")
+        for name, address, has_pf in all_restaurants:
+            st.markdown(f"**{name}** - {address}, Prix Fixe: {'Yes' if has_pf else 'No'}")
     else:
-        st.info("No prix fixe menus found yet. Use the search bar to begin.")
+        st.info("No restaurants found. Use the search above to start.")
 except Exception as e:
     st.error(f"Failed to load data: {e}")
