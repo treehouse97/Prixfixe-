@@ -1,6 +1,6 @@
 
 import requests
-from config.settings import GOOGLE_API_KEY
+from settings import GOOGLE_API_KEY
 
 PLACES_ENDPOINT = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
 GEOCODE_ENDPOINT = 'https://maps.googleapis.com/maps/api/geocode/json'
