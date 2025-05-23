@@ -1,7 +1,7 @@
 import streamlit as st
 import sqlite3
 from scraper import fetch_website_text, detect_prix_fixe
-from places_api import find_restaurants
+from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY, DEFAULT_LOCATION, SEARCH_RADIUS_METERS
 import requests
 import os
@@ -80,25 +80,23 @@ if st.button("Initialize Database"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 if st.button("Scrape Restaurants in Area"):
-    latlng = geocode_location(user_location)
-    if latlng:
-        try:
-            raw_places = find_restaurants(latlng, SEARCH_RADIUS_METERS)
-            enriched = []
-            for place in raw_places:
-                name = place.get("name", "")
-                address = place.get("vicinity", "")
-                website = place.get("website", "")
-                has_prix_fixe = 0
-                if website:
-                    text = fetch_website_text(website)
-                    if detect_prix_fixe(text):
-                        has_prix_fixe = 1
-                enriched.append((name, address, has_prix_fixe))
-            store_restaurants(enriched)
-            st.success("Restaurants scraped and stored.")
-        except Exception as e:
-            st.error(f"Failed to store data: {e}")
+    try:
+        raw_places = text_search_restaurants(user_location)
+        enriched = []
+        for place in raw_places:
+            name = place.get("name", "")
+            address = place.get("vicinity", "")
+            website = place.get("website", "")
+            has_prix_fixe = 0
+            if website:
+                text = fetch_website_text(website)
+                if detect_prix_fixe(text):
+                    has_prix_fixe = 1
+            enriched.append((name, address, has_prix_fixe))
+        store_restaurants(enriched)
+        st.success("Restaurants scraped and stored.")
+    except Exception as e:
+        st.error(f"Failed to store data: {e}")
 
 # Display results
 try:
