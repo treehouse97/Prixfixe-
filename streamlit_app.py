@@ -21,6 +21,7 @@ def init_db():
             address TEXT,
             website TEXT,
             has_prix_fixe INTEGER,
+            label TEXT,
             raw_text TEXT,
             UNIQUE(name, address)
         )
@@ -38,8 +39,8 @@ def store_restaurants(restaurants):
     for r in restaurants:
         try:
             c.execute("""
-                INSERT OR IGNORE INTO restaurants (name, address, website, has_prix_fixe, raw_text)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO restaurants (name, address, website, has_prix_fixe, label, raw_text)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, r)
         except Exception as e:
             print(f"Insert failed for {r}: {e}")
@@ -49,7 +50,7 @@ def store_restaurants(restaurants):
 def load_all_restaurants():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, address, website, has_prix_fixe FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
+    c.execute("SELECT name, address, website, label FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
     results = c.fetchall()
     conn.close()
     return results
@@ -106,7 +107,7 @@ if st.button("Scrape Restaurants in Area"):
                 text = fetch_website_text(website)
                 matched, label = detect_prix_fixe_detailed(text)
                 if matched:
-                    enriched.append((name, address, website, 1, text))
+                    enriched.append((name, address, website, 1, label, text))
                     st.success(f"{name}: Match found ({label})")
                 else:
                     st.warning(f"{name}: No prix fixe found.")
@@ -125,8 +126,8 @@ try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
         st.subheader("Detected Prix Fixe Menus")
-        for name, address, website, _ in all_restaurants:
-            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
+        for name, address, website, label in all_restaurants:
+            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})  \n_Detected: {label}_")
     else:
         st.info("No prix fixe menus stored yet.")
 except Exception as e:
