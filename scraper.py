@@ -6,7 +6,7 @@ from collections import Counter
 
 # ----------------------------
 def _extract_visible_text(soup):
-    """Extracts visible text from semantic content tags only."""
+    """Extracts visible text from meaningful tags only."""
     return " ".join(
         el.get_text(" ", strip=True).lower()
         for el in soup.find_all(["h1", "h2", "h3", "p", "li", "section", "article"])
@@ -16,8 +16,7 @@ def _extract_visible_text(soup):
 def _deduplicate_noise(text, min_repeats=3):
     tokens = text.split()
     common = {tok for tok, count in Counter(tokens).items() if count >= min_repeats}
-    filtered = " ".join(tok for tok in tokens if tok not in common)
-    return filtered
+    return " ".join(tok for tok in tokens if tok not in common)
 
 def _strip_known_noise(text):
     noise_phrases = [
@@ -31,6 +30,9 @@ def _strip_known_noise(text):
     for pattern in noise_phrases:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
     return text
+
+def text_preview(text, chars=600):
+    return text[:chars] + ("..." if len(text) > chars else "")
 
 # ----------------------------
 def fetch_website_text(url):
@@ -49,7 +51,7 @@ def fetch_website_text(url):
     visited.add(url)
     combined += _extract_visible_text(soup)
 
-    # follow internal menu-related links only
+    # follow menu-related internal links
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if "menu" not in href.lower():
@@ -72,11 +74,8 @@ def fetch_website_text(url):
     print(f"[SCRAPED] {url}\n{text_preview(cleaned)}")
     return cleaned
 
-def text_preview(text, chars=600):
-    return text[:chars] + ("..." if len(text) > chars else "")
-
 # ----------------------------
-def detect_prix_fixe(text):
+def detect_prix_fixe(text, log=False):
     patterns = [
         r"prix\s*fixe",
         r"\$\s*\d+\s*(prix\s*fixe)?",
@@ -84,4 +83,11 @@ def detect_prix_fixe(text):
         r"(fixed|set)\s*[- ]?\s*menu",
         r"tasting\s+menu",
     ]
-    return any(re.search(p, text, re.IGNORECASE) for p in patterns)
+    for p in patterns:
+        if re.search(p, text, re.IGNORECASE):
+            if log:
+                print(f"[MATCH] Pattern matched: {p}")
+            return True
+    if log:
+        print("[NO MATCH] No prix fixe keywords found.")
+    return False
