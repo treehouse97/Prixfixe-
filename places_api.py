@@ -20,15 +20,14 @@ def find_restaurants(location, radius):
         st.error(f"Failed to parse JSON: {e}")
         return []
 
-    # DEBUGGING: show Google's full response
-    st.write("Nearby Search Raw Response:", data)
-
     if "results" not in data or not data["results"]:
         st.warning("Google returned no restaurant results.")
         return []
 
     final_results = []
     for place in data["results"]:
+        name = place.get("name", "")
+        vicinity = place.get("vicinity", "")
         place_id = place.get("place_id")
         if not place_id:
             continue
@@ -39,17 +38,21 @@ def find_restaurants(location, radius):
             "key": GOOGLE_API_KEY
         }
 
-        detail_response = requests.get(details_url, params=detail_params)
         try:
+            detail_response = requests.get(details_url, params=detail_params)
             details = detail_response.json().get("result", {})
-        except Exception:
+        except Exception as e:
+            st.warning(f"Failed to fetch details for {name}: {e}")
             continue
 
-        if "website" in details:
+        website = details.get("website", "")
+        if website:
             final_results.append({
-                "name": details.get("name", ""),
-                "vicinity": details.get("vicinity", ""),
-                "website": details["website"]
+                "name": name,
+                "vicinity": vicinity,
+                "website": website
             })
+        else:
+            st.warning(f"[INFO] No website listed for: {name} ({vicinity})")
 
     return final_results
