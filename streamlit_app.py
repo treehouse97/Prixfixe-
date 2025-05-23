@@ -16,8 +16,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             address TEXT,
-            rating REAL,
-            has_prix_fixe INTEGER
+            has_prix_fixe INTEGER,
+            UNIQUE(name, address)
         )
     """)
     conn.commit()
@@ -26,10 +26,11 @@ def init_db():
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.executemany("""
-        INSERT INTO restaurants (name, address, rating, has_prix_fixe)
-        VALUES (?, ?, ?, ?)
-    """, restaurants)
+    for r in restaurants:
+        try:
+            c.execute("INSERT OR IGNORE INTO restaurants (name, address, has_prix_fixe) VALUES (?, ?, ?)", r)
+        except Exception as e:
+            print(f"Insert failed for {r}: {e}")
     conn.commit()
     conn.close()
 
@@ -37,9 +38,9 @@ def load_prix_fixe_restaurants():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        SELECT name, address, rating FROM restaurants
+        SELECT name, address FROM restaurants
         WHERE has_prix_fixe = 1
-        ORDER BY rating DESC
+        ORDER BY name
     """)
     results = c.fetchall()
     conn.close()
@@ -63,15 +64,13 @@ if st.button("Scrape Restaurants"):
         for place in raw_places:
             name = place.get("name", "")
             address = place.get("vicinity", "")
-            rating = 0.0  # Rating not retrieved in this version, default to 0
             website = place.get("website", "")
             has_prix_fixe = 0
             if website:
                 text = fetch_website_text(website)
                 if detect_prix_fixe(text):
                     has_prix_fixe = 1
-            enriched.append((name, address, rating, has_prix_fixe))
-
+            enriched.append((name, address, has_prix_fixe))
         store_restaurants(enriched)
         st.success("Restaurants scraped and stored.")
     except Exception as e:
@@ -80,8 +79,8 @@ if st.button("Scrape Restaurants"):
 try:
     restaurants = load_prix_fixe_restaurants()
     if restaurants:
-        for name, address, rating in restaurants:
-            st.markdown(f"**{name}** - {address}, Rating: {rating}, Prix Fixe: Yes")
+        for name, address in restaurants:
+            st.markdown(f"**{name}** - {address}, Prix Fixe: Yes")
     else:
         st.info("No prix fixe menus found yet. Tap 'Scrape Restaurants' to begin.")
 except Exception as e:
