@@ -1,16 +1,16 @@
 import requests
 from bs4 import BeautifulSoup
 import re
-import pytesseract
-from PIL import Image
-from io import BytesIO
-import tempfile
-import os
 
+# Try importing OCR tools
 try:
+    import pytesseract
+    from PIL import Image
+    from io import BytesIO
     from pdf2image import convert_from_bytes
+    OCR_AVAILABLE = True
 except ImportError:
-    convert_from_bytes = None
+    OCR_AVAILABLE = False
 
 def fetch_website_text(url):
     try:
@@ -20,13 +20,15 @@ def fetch_website_text(url):
         soup = BeautifulSoup(response.text, 'html.parser')
         text = soup.get_text(separator=' ', strip=True).lower()
 
-        # Extract links to PDFs and images
+        if not OCR_AVAILABLE:
+            return text
+
+        # OCR fallback if available
         links = [a['href'] for a in soup.find_all('a', href=True)]
         pdf_links = [l for l in links if l.lower().endswith('.pdf')]
         img_tags = soup.find_all('img', src=True)
         img_links = [tag['src'] for tag in img_tags if tag['src'].lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-        # OCR fallback
         for link in pdf_links:
             ocr_text = extract_text_from_pdf(link, base_url=url)
             text += " " + ocr_text
@@ -41,6 +43,8 @@ def fetch_website_text(url):
         return ""
 
 def extract_text_from_image(img_url, base_url=""):
+    if not OCR_AVAILABLE:
+        return ""
     try:
         if not img_url.startswith("http"):
             img_url = requests.compat.urljoin(base_url, img_url)
@@ -52,8 +56,7 @@ def extract_text_from_image(img_url, base_url=""):
         return ""
 
 def extract_text_from_pdf(pdf_url, base_url=""):
-    if convert_from_bytes is None:
-        print("[ERROR] pdf2image not installed. Skipping PDF OCR.")
+    if not OCR_AVAILABLE:
         return ""
     try:
         if not pdf_url.startswith("http"):
