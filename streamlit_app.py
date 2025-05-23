@@ -8,7 +8,6 @@ import os
 
 DB_FILE = "prix_fixe.db"
 
-# --- Database Operations ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -48,7 +47,6 @@ def load_all_restaurants():
     conn.close()
     return results
 
-# --- Geocoding ---
 def geocode_location(place_name):
     url = "https://maps.googleapis.com/maps/api/geocode/json"
     params = {"address": place_name, "key": GOOGLE_API_KEY}
@@ -64,7 +62,6 @@ def geocode_location(place_name):
         st.error(f"Error geocoding location: {e}")
     return None
 
-# --- App UI ---
 st.title("Prix Fixe Menu Finder")
 
 ensure_db()
@@ -90,6 +87,9 @@ if st.button("Scrape Restaurants in Area"):
             has_prix_fixe = 0
             if website:
                 text = fetch_website_text(website)
+                if "bayberry" in website.lower():
+                    st.subheader("Bayberry Text Debug")
+                    st.code(text[:2000], language="text")
                 if detect_prix_fixe(text):
                     has_prix_fixe = 1
             enriched.append((name, address, has_prix_fixe))
@@ -98,7 +98,6 @@ if st.button("Scrape Restaurants in Area"):
     except Exception as e:
         st.error(f"Failed to store data: {e}")
 
-# Display results
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
