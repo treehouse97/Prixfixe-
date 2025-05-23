@@ -43,13 +43,18 @@ def fetch_website_text(url):
 
 def detect_prix_fixe_detailed(text):
     patterns = {
-        "prix fixe": r"prix\s*fixe",
-        "pre fixe": r"pre\s*fixe",
-        "3-course": r"(three|3)[ -]course",
-        "special menu": r"special\s+menu",
-        "fixed menu": r"(fixed|set)[ -]?menu",
-        "tasting menu": r"tasting\s+menu"
+        "prix fixe": r"prix[\s\-]*fixe",
+        "pre fixe": r"pre[\s\-]*fixe",
+        "3-course": r"(three|3)[\s\-]*(course|courses)",
+        "multi-course": r"\d+\s*course\s*meal",
+        "fixed menu": r"(fixed|set)[\s\-]*(menu|meal)",
+        "tasting menu": r"tasting\s*menu",
+        "special menu": r"special\s*(menu|offer|deal)",
+        "complete lunch": r"complete\s*(lunch|dinner)\s*special",
+        "lunch special": r"(lunch|dinner)\s*special\s*(menu|offer)?",
+        "pre-fixe typo": r"pre[\s\-]*fix(e)?"
     }
+
     for label, pattern in patterns.items():
         if re.search(pattern, text, re.IGNORECASE):
             return True, label
