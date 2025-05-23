@@ -1,13 +1,14 @@
 import streamlit as st
 import sqlite3
+import os
+import requests
 from scraper import fetch_website_text, detect_prix_fixe
 from places_textsearch import text_search_restaurants
-from settings import GOOGLE_API_KEY, DEFAULT_LOCATION, SEARCH_RADIUS_METERS
-import requests
-import os
+from settings import GOOGLE_API_KEY
 
 DB_FILE = "prix_fixe.db"
 
+# ---------------- Database ----------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -47,6 +48,7 @@ def load_all_restaurants():
     conn.close()
     return results
 
+# ---------------- Geocoding ----------------
 def geocode_location(place_name):
     url = "https://maps.googleapis.com/maps/api/geocode/json"
     params = {"address": place_name, "key": GOOGLE_API_KEY}
@@ -62,8 +64,8 @@ def geocode_location(place_name):
         st.error(f"Error geocoding location: {e}")
     return None
 
+# ---------------- Streamlit UI ----------------
 st.title("Prix Fixe Menu Finder")
-
 ensure_db()
 
 if st.button("Reset Database"):
@@ -76,6 +78,7 @@ if st.button("Initialize Database"):
 
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
+
 if st.button("Scrape Restaurants in Area"):
     try:
         raw_places = text_search_restaurants(user_location)
@@ -85,19 +88,32 @@ if st.button("Scrape Restaurants in Area"):
             address = place.get("vicinity", "")
             website = place.get("website", "")
             has_prix_fixe = 0
+
             if website:
                 text = fetch_website_text(website)
+
                 if "bayberry" in website.lower():
                     st.subheader("Bayberry Text Debug")
                     st.code(text[:2000], language="text")
-                if detect_prix_fixe(text):
-                    has_prix_fixe = 1
+
+                    st.subheader("Detection Log")
+                    if detect_prix_fixe(text, log=True):
+                        st.success("Bayberry matched a prix fixe pattern.")
+                        has_prix_fixe = 1
+                    else:
+                        st.error("Bayberry did NOT match any prix fixe pattern.")
+                else:
+                    if detect_prix_fixe(text):
+                        has_prix_fixe = 1
+
             enriched.append((name, address, has_prix_fixe))
+
         store_restaurants(enriched)
         st.success("Restaurants scraped and stored.")
     except Exception as e:
         st.error(f"Failed to store data: {e}")
 
+# ---------------- Results ----------------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
