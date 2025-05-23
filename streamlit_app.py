@@ -3,14 +3,15 @@ import sqlite3
 import requests
 import os
 
-# Load API key from Streamlit secrets or hardcoded (as requested)
+# Constants
 GOOGLE_PLACES_API_KEY = "AIzaSyApX2q-0DaM5xqJGGyiyFA6gkRe7rRxaeM"
-
 DB_FILE = "prix_fixe.db"
 
+# --- Database Operations ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    c.execute("DROP TABLE IF EXISTS restaurants")
     c.execute("""
         CREATE TABLE IF NOT EXISTS restaurants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,15 +23,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
-def delete_db():
-    try:
-        os.remove(DB_FILE)
-        return True, "Database deleted. Please click 'Initialize Database' again."
-    except FileNotFoundError:
-        return False, "Database file not found."
-    except Exception as e:
-        return False, f"Failed to delete database: {e}"
 
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
@@ -54,23 +46,34 @@ def load_prix_fixe_restaurants():
     conn.close()
     return results
 
-def mock_scrape_restaurants():
-    # Replace with actual scraping or API logic
-    return [
-        ("Le Gourmet", "123 Main St", 4.5, 1),
-        ("Chez Nous", "789 Oak St", 4.8, 1),
-        ("No Prix Fixe Place", "456 Elm St", 4.0, 0)
-    ]
+# --- Google Places API Integration ---
+def scrape_restaurants_real_world(location="Garden City, NY", radius=3000):
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    params = {
+        "key": GOOGLE_PLACES_API_KEY,
+        "location": "40.7268,-73.6343",  # Garden City coordinates
+        "radius": radius,
+        "type": "restaurant"
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
 
-# Streamlit UI
+    results = []
+    for place in data.get("results", []):
+        name = place.get("name")
+        address = place.get("vicinity")
+        rating = place.get("rating", 0.0)
+        # Simulated condition: if 'prix fixe' is in name or address (refine as needed)
+        has_prix_fixe = int("prix fixe" in name.lower() or "prix fixe" in address.lower())
+        results.append((name, address, rating, has_prix_fixe))
+    return results
+
+# --- UI ---
 st.title("Prix Fixe Menu Finder")
 
-if st.button("Delete Database"):
-    success, message = delete_db()
-    if success:
-        st.success(message)
-    else:
-        st.warning(message)
+if st.button("Reset Database"):
+    init_db()
+    st.success("Database reset.")
 
 if st.button("Initialize Database"):
     init_db()
@@ -78,7 +81,7 @@ if st.button("Initialize Database"):
 
 if st.button("Scrape Restaurants"):
     try:
-        data = mock_scrape_restaurants()
+        data = scrape_restaurants_real_world()
         store_restaurants(data)
         st.success("Restaurants scraped and stored.")
     except Exception as e:
