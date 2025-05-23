@@ -1,4 +1,5 @@
 import requests
+import streamlit as st
 from settings import GOOGLE_API_KEY
 
 def find_restaurants(location, radius):
@@ -16,11 +17,14 @@ def find_restaurants(location, radius):
     try:
         data = response.json()
     except Exception as e:
-        print("Failed to parse nearby search:", e)
+        st.error(f"Failed to parse JSON: {e}")
         return []
 
-    if "results" not in data:
-        print("Nearby search error:", data)
+    # DEBUGGING: show Google's full response
+    st.write("Nearby Search Raw Response:", data)
+
+    if "results" not in data or not data["results"]:
+        st.warning("Google returned no restaurant results.")
         return []
 
     final_results = []
