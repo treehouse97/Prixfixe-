@@ -1,4 +1,4 @@
-import sqlite3
+    import sqlite3
 import streamlit as st
 from scraper import fetch_website_text, detect_prix_fixe
 from places_api import find_restaurants
@@ -25,14 +25,18 @@ def initialize_db():
     conn.close()
 
 def load_data():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1")
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, address FROM restaurants WHERE has_prix_fixe = 1")
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    except sqlite3.OperationalError:
+        return []  # Gracefully fallback if table doesn't exist
 
 def run_scraper():
+    initialize_db()  # Ensure schema is ready
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -52,17 +56,16 @@ def run_scraper():
     conn.commit()
     conn.close()
 
-# Always initialize the DB on first load
+# Always initialize DB first
 initialize_db()
 
 # Scrape button
 if st.button("Scrape Restaurants"):
-    initialize_db()  # Ensure table exists
     run_scraper()
     st.success("Scraping complete. Reloading results...")
     st.rerun()
 
-# Load and display results
+# Load and display data
 results = load_data()
 if results:
     st.subheader(f"Found {len(results)} restaurants with Prix Fixe menus")
