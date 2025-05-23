@@ -24,6 +24,8 @@ def initialize_db():
     conn.commit()
     conn.close()
 
+initialize_db()  # Make sure table exists before anything else
+
 def load_data():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
