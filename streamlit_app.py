@@ -110,7 +110,7 @@ if st.button("Click Here To Search"):
                     enriched.append((name, address, website, 1, label, text))
                     st.success(f"{name}: Match found ({label})")
                 else:
-                    st.warning(f"{name}: No prix fixe found.")
+                    st.warning(f"{name}: No deal found.")
 
         if enriched:
             store_restaurants(enriched)
