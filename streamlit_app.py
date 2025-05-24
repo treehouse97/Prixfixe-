@@ -75,7 +75,7 @@ def geocode_location(place_name):
 st.title("The Fixe")
 ensure_db()
 
-if st.button("Reset Database"):
+if st.button("Click Here To Reset"):
     init_db()
     st.success("Database reset.")
 
