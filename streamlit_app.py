@@ -7,6 +7,8 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
+from streamlit_lottie import st_lottie  # Animation support
+
 DB_FILE = "prix_fixe.db"
 
 # --------- Database setup ---------
@@ -55,6 +57,12 @@ def load_all_restaurants():
     conn.close()
     return results
 
+def load_lottie_url(url):
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    return r.json()
+
 # --------- Geocoding ---------
 def geocode_location(place_name):
     url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -83,51 +91,69 @@ st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 if st.button("Click Here To Search"):
-    try:
-        raw_places = text_search_restaurants(user_location)
-        enriched = []
+    with st.spinner("Please wait for The Fixe..."):
+        # Display Lottie cooking animation
+        lottie_url = "https://lottie.host/da46d4dd-2c65-4f4a-a4c2-2cb8c8e4caa6/iMqqqAh7wI.json"
+        lottie_animation = load_lottie_url(lottie_url)
+        if lottie_animation:
+            st_lottie(lottie_animation, height=300, key="cooking")
 
-        for place in raw_places:
-            name = place.get("name", "")
-            address = place.get("vicinity", "")
-            website = place.get("website", "")
+        try:
+            raw_places = text_search_restaurants(user_location)
+            enriched = []
 
-            # Check cache
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
-            result = c.fetchone()
-            conn.close()
+            for place in raw_places:
+                name = place.get("name", "")
+                address = place.get("vicinity", "")
+                website = place.get("website", "")
 
-            if result:
-                st.info(f"Cached: {name} - {'Yes' if result[0] else 'No'}")
-                continue
+                # Check cache
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
+                result = c.fetchone()
+                conn.close()
 
-            if website:
-                text = fetch_website_text(website)
-                matched, label = detect_prix_fixe_detailed(text)
-                if matched:
-                    enriched.append((name, address, website, 1, label, text))
-                    st.success(f"{name}: Match found ({label})")
-                else:
-                    st.warning(f"{name}: No deal found.")
+                if result:
+                    st.info(f"Cached: {name} - {'Yes' if result[0] else 'No'}")
+                    continue
 
-        if enriched:
-            store_restaurants(enriched)
-            st.success("New results saved.")
-        else:
-            st.info("No new matches to store.")
+                if website:
+                    text = fetch_website_text(website)
+                    matched, label = detect_prix_fixe_detailed(text)
+                    if matched:
+                        enriched.append((name, address, website, 1, label, text))
+                        st.success(f"{name}: Match found ({label})")
+                    else:
+                        st.warning(f"{name}: No deal found.")
 
-    except Exception as e:
-        st.error(f"Scrape failed: {e}")
+            if enriched:
+                store_restaurants(enriched)
+                st.success("New results saved.")
+            else:
+                st.info("No new matches to store.")
+
+        except Exception as e:
+            st.error(f"Scrape failed: {e}")
+
+    st.markdown("### The Fixe is complete. Scroll to the bottom.")
 
 # --------- Display Results ---------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
         st.subheader("Detected Prix Fixe Menus")
+
+        # Group results by label
+        grouped = {}
         for name, address, website, label in all_restaurants:
-            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})  \n_Detected: {label}_")
+            grouped.setdefault(label, []).append((name, address, website))
+
+        # Display grouped results
+        for label, entries in grouped.items():
+            st.markdown(f"#### {label}")
+            for name, address, website in entries:
+                st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
     else:
         st.info("No prix fixe menus stored yet.")
 except Exception as e:
