@@ -101,13 +101,17 @@ if st.button("Click Here To Reset"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
+# UI placeholders for status and animation
 status_placeholder = st.empty()
+lottie_container = st.empty()
 
 if st.button("Click Here To Search"):
+    # Show animation and loading text
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
-        lottie_animation = load_lottie_url(LOTTIE_URL)
-        if lottie_animation:
+    lottie_animation = load_lottie_url(LOTTIE_URL)
+    if lottie_animation:
+        with lottie_container.container():
             st_lottie(lottie_animation, height=300, key="cooking")
 
     try:
@@ -147,8 +151,9 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    with status_placeholder.container():
-        st.markdown("### The Fixe is complete. Scroll to the bottom.")
+    # Replace animation with completion message
+    lottie_container.empty()
+    status_placeholder.markdown("### The Fixe is complete. Scroll to the bottom.")
 
 # --------- Display Results ---------
 try:
