@@ -82,7 +82,7 @@ if st.button("Reset Database"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-if st.button("Scrape Restaurants in Area"):
+if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
         enriched = []
