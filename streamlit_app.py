@@ -148,7 +148,7 @@ if st.button("Click Here To Search"):
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Detected Prix Fixe Menus")
+        st.subheader("Enjoy")
 
         # Group results by label
         grouped = {}
