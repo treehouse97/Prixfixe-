@@ -77,7 +77,8 @@ def detect_prix_fixe_detailed(text):
         "specials": r"(today'?s|weekday|weekend)?\s*specials",
         "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
         "combo deal": r"(combo|combination)\s*(deal|meal|menu)",
-        "value menu": r"value\s*(menu|deal|offer)"
+        "value menu": r"value\s*(menu|deal|offer)",
+        "deals": r"\bdeals?\b"
     }
 
     for label, pattern in patterns.items():
