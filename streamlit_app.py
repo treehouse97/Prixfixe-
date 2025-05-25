@@ -3,13 +3,12 @@ import sqlite3
 import os
 import json
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
-
 from streamlit_lottie import st_lottie
-from concurrent.futures import ThreadPoolExecutor
 
 DB_FILE = "prix_fixe.db"
 
@@ -64,21 +63,13 @@ def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
 
-# --------- Geocoding ---------
-def geocode_location(place_name):
-    url = "https://maps.googleapis.com/maps/api/geocode/json"
-    params = {"address": place_name, "key": GOOGLE_API_KEY}
-    try:
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data["status"] == "OK":
-            location = data["results"][0]["geometry"]["location"]
-            return f"{location['lat']},{location['lng']}"
-        else:
-            st.error(f"Geocoding failed: {data['status']}")
-    except Exception as e:
-        st.error(f"Error geocoding location: {e}")
-    return None
+# --------- Target Prioritization ---------
+def prioritize_places(places):
+    keywords = ["bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"]
+    def score(place):
+        name = place.get("name", "").lower()
+        return -1 if any(k in name for k in keywords) else 0
+    return sorted(places, key=score)
 
 # --------- Parallel Scrape Handler ---------
 def process_place(place):
@@ -135,11 +126,16 @@ if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
 
-        # ---------- Parallel scraping begins here ----------
+        # ------- Pre-filter and prioritize ---------
+        places_with_websites = [p for p in raw_places if p.get("website")]
+        prioritized = prioritize_places(places_with_websites)
+        # -------------------------------------------
+
+        # ------- Parallel scraping ---------
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(process_place, raw_places))
+            results = list(executor.map(process_place, prioritized))
         enriched = [r for r in results if r]
-        # ---------------------------------------------------
+        # -----------------------------------
 
         if enriched:
             store_restaurants(enriched)
@@ -150,7 +146,6 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # Replace loading message and animation with completion
     with status_placeholder.container():
         st.markdown("### The Fixe is complete. Scroll to the bottom.")
 
