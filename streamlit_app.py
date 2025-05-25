@@ -26,7 +26,8 @@ def init_db():
             has_prix_fixe INTEGER,
             label TEXT,
             raw_text TEXT,
-            UNIQUE(name, address)
+            location TEXT,
+            UNIQUE(name, address, location)
         )
     """)
     conn.commit()
@@ -36,28 +37,43 @@ def ensure_db():
     if not os.path.exists(DB_FILE):
         init_db()
 
+# --------- Data Handling ---------
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     for r in restaurants:
         try:
             c.execute("""
-                INSERT OR IGNORE INTO restaurants (name, address, website, has_prix_fixe, label, raw_text)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO restaurants 
+                (name, address, website, has_prix_fixe, label, raw_text, location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, r)
-        except Exception as e:
-            pass  # Fail silently
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
-def load_all_restaurants():
+def load_restaurants_for_location(location):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT name, address, website, label FROM restaurants WHERE has_prix_fixe = 1 ORDER BY name")
+    c.execute("""
+        SELECT name, address, website, label 
+        FROM restaurants 
+        WHERE has_prix_fixe = 1 AND location = ?
+        ORDER BY name
+    """, (location,))
     results = c.fetchall()
     conn.close()
     return results
 
+def delete_location_results(location):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM restaurants WHERE location = ?", (location,))
+    conn.commit()
+    conn.close()
+
+# --------- Lottie Loader ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -71,7 +87,7 @@ def prioritize_places(places):
     return sorted(places, key=score)
 
 # --------- Scraping Logic ---------
-def process_place(place):
+def process_place(place, location):
     name = place.get("name", "")
     address = place.get("vicinity", "")
     website = place.get("website", "")
@@ -81,7 +97,7 @@ def process_place(place):
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
+    c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=? AND location=?", (name, address, location))
     result = c.fetchone()
     conn.close()
 
@@ -92,24 +108,28 @@ def process_place(place):
         text = fetch_website_text(website)
         matched, label = detect_prix_fixe_detailed(text)
         if matched:
-            return (name, address, website, 1, label, text)
+            return (name, address, website, 1, label, text, location)
     except:
         return None
 
     return None
 
-# --------- Streamlit Interface ---------
+# --------- Streamlit UI ---------
 st.title("The Fixe")
 ensure_db()
-
-if st.button("Click Here To Reset"):
-    init_db()
-    st.success("Database reset.")
 
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
+# Delete specific location's cached data
+if st.button("Clear This Location's Cache"):
+    delete_location_results(user_location)
+    st.success(f"Cache cleared for {user_location}.")
+
+# Run search
 if st.button("Click Here To Search"):
+    st.session_state["current_location"] = user_location
+
     status_placeholder = st.empty()
     animation_placeholder = st.empty()
 
@@ -123,14 +143,12 @@ if st.button("Click Here To Search"):
 
     try:
         raw_places = text_search_restaurants(user_location)
-
-        # --------- Pre-filter, prioritize, and limit to 25 ---------
         places_with_websites = [p for p in raw_places if p.get("website")]
         prioritized = prioritize_places(places_with_websites)[:25]
 
         enriched = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(process_place, prioritized))
+            results = list(executor.map(lambda p: process_place(p, user_location), prioritized))
         enriched = [r for r in results if r]
 
         if enriched:
@@ -143,7 +161,7 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     with status_placeholder.container():
-        st.markdown("### The Fixe is in. Scroll to the bottom.")
+        st.markdown("### The Fixe is complete. Scroll to the bottom.")
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
@@ -151,27 +169,26 @@ if st.button("Click Here To Search"):
             st_lottie(finished_animation, height=300, key="finished")
 
 # --------- Display Results ---------
-try:
-    all_restaurants = load_all_restaurants()
-    if all_restaurants:
-        st.subheader("click on the website to see the deals.")
+location_to_display = st.session_state.get("current_location", user_location)
+results = load_restaurants_for_location(location_to_display)
 
-        grouped = {}
-        for name, address, website, label in all_restaurants:
-            grouped.setdefault(label.lower(), []).append((name, address, website, label))
+if results:
+    st.subheader("Detected Prix Fixe Menus")
 
-        prix_fixe_terms = ["prix fixe", "pre fixe", "price fixe"]
-        def is_prix_fixe(label):
-            return any(term in label for term in prix_fixe_terms)
+    grouped = {}
+    for name, address, website, label in results:
+        grouped.setdefault(label.lower(), []).append((name, address, website, label))
 
-        sorted_labels = sorted(grouped.keys(), key=lambda k: (0 if is_prix_fixe(k) else 1, k))
+    prix_fixe_terms = ["prix fixe", "pre fixe", "price fixe"]
+    def is_prix_fixe(label):
+        return any(term in label for term in prix_fixe_terms)
 
-        for key in sorted_labels:
-            readable_label = grouped[key][0][3]
-            st.markdown(f"#### {readable_label}")
-            for name, address, website, _ in grouped[key]:
-                st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
-    else:
-        st.info("No prix fixe menus stored yet.")
-except Exception as e:
-    st.error(f"Failed to load results: {e}")
+    sorted_labels = sorted(grouped.keys(), key=lambda k: (0 if is_prix_fixe(k) else 1, k))
+
+    for key in sorted_labels:
+        readable_label = grouped[key][0][3]
+        st.markdown(f"#### {readable_label}")
+        for name, address, website, _ in grouped[key]:
+            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
+else:
+    st.info("No prix fixe menus stored yet for this location.")
