@@ -3,7 +3,7 @@ import sqlite3
 import os
 import json
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
@@ -70,14 +70,14 @@ def prioritize_places(places):
         return -1 if any(k in name for k in keywords) else 0
     return sorted(places, key=score)
 
-# --------- Scraping Logic with Status ---------
-def process_place_verbose(place):
+# --------- Scraping Logic ---------
+def process_place(place):
     name = place.get("name", "")
     address = place.get("vicinity", "")
     website = place.get("website", "")
 
     if not website:
-        return {"name": name, "status": "skipped (no website)", "data": None}
+        return None
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -86,17 +86,17 @@ def process_place_verbose(place):
     conn.close()
 
     if result:
-        return {"name": name, "status": "cached", "data": None}
+        return None
 
     try:
         text = fetch_website_text(website)
         matched, label = detect_prix_fixe_detailed(text)
         if matched:
-            return {"name": name, "status": f"match found ({label})", "data": (name, address, website, 1, label, text)}
-        else:
-            return {"name": name, "status": "no deal found", "data": None}
+            return (name, address, website, 1, label, text)
     except:
-        return {"name": name, "status": "error", "data": None}
+        return None
+
+    return None
 
 # --------- Streamlit Interface ---------
 st.title("The Fixe")
@@ -124,33 +124,15 @@ if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
 
-        # --------- Filter and prioritize ---------
+        # --------- Pre-filter and limit to 25 ---------
         places_with_websites = [p for p in raw_places if p.get("website")]
-        prioritized = prioritize_places(places_with_websites)
+        prioritized = prioritize_places(places_with_websites)[:25]
 
-        # --------- Scraping with live progress ---------
         enriched = []
-        progress_area = st.container()
-
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(process_place_verbose, p): p for p in prioritized}
-            for future in as_completed(futures):
-                result = future.result()
-                name = result["name"]
-                status = result["status"]
+            results = list(executor.map(process_place, prioritized))
+        enriched = [r for r in results if r]
 
-                with progress_area:
-                    if "match found" in status:
-                        st.success(f"{name}: {status}")
-                    elif "no deal" in status:
-                        st.warning(f"{name}: {status}")
-                    else:
-                        st.info(f"{name}: {status}")
-
-                if result["data"]:
-                    enriched.append(result["data"])
-
-        # --------- Store results ---------
         if enriched:
             store_restaurants(enriched)
             st.success("New results saved.")
@@ -161,7 +143,7 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     with status_placeholder.container():
-        st.markdown("### The Fixe is in. Scroll to the bottom.")
+        st.markdown("### The Fixe is complete. Scroll to the bottom.")
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
@@ -172,7 +154,7 @@ if st.button("Click Here To Search"):
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("click on the websites for more details on the deals")
+        st.subheader("Detected Prix Fixe Menus")
 
         grouped = {}
         for name, address, website, label in all_restaurants:
