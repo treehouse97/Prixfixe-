@@ -143,7 +143,7 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     with status_placeholder.container():
-        st.markdown("### The Fixe is complete. Scroll to the bottom.")
+        st.markdown("### The Fixe is in. Scroll to the bottom.")
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
@@ -154,7 +154,7 @@ if st.button("Click Here To Search"):
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Detected Prix Fixe Menus")
+        st.subheader("click on the website to see the deals.")
 
         grouped = {}
         for name, address, website, label in all_restaurants:
