@@ -4,14 +4,15 @@ import os
 import json
 import requests
 from concurrent.futures import ThreadPoolExecutor
+
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
 from streamlit_lottie import st_lottie
-from streamlit_js_eval import get_geolocation
 
 DB_FILE = "prix_fixe.db"
 
+# --------- Database setup ---------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -32,6 +33,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+# --------- Data Handling ---------
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -60,10 +62,12 @@ def load_restaurants_for_location(location):
     conn.close()
     return results
 
+# --------- Lottie Loader ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
 
+# --------- Target Prioritization ---------
 def prioritize_places(places):
     keywords = ["bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"]
     def score(place):
@@ -71,6 +75,7 @@ def prioritize_places(places):
         return -1 if any(k in name for k in keywords) else 0
     return sorted(places, key=score)
 
+# --------- Scraping Logic ---------
 def process_place(place, location):
     name = place.get("name", "")
     address = place.get("vicinity", "")
@@ -98,8 +103,10 @@ def process_place(place, location):
 
     return None
 
+# --------- Streamlit UI ---------
 st.title("The Fixe")
 
+# Initialize DB only once per session
 if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
@@ -110,37 +117,9 @@ if st.button("Reset Entire Database"):
     st.success("Database was reset and rebuilt.")
 
 st.subheader("Search Area")
-col1, col2 = st.columns([2, 1])
+user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-with col1:
-    user_location = st.text_input(
-        "Enter a town, hamlet, or neighborhood",
-        value=st.session_state.get("user_location", "Islip, NY")
-    )
-
-with col2:
-    if st.button("Use My Location"):
-        result = get_geolocation()
-        if result and result.get("latitude") and result.get("longitude"):
-            lat = result["latitude"]
-            lon = result["longitude"]
-            coords = f"{lat},{lon}"
-
-            try:
-                geo_url = "https://maps.googleapis.com/maps/api/geocode/json"
-                params = {"latlng": coords, "key": GOOGLE_API_KEY}
-                resp = requests.get(geo_url, params=params).json()
-                if resp["status"] == "OK":
-                    formatted = resp["results"][0]["formatted_address"]
-                    st.session_state["user_location"] = formatted
-                    st.success(f"Using location: {formatted}")
-                else:
-                    st.warning("Could not geocode location.")
-            except Exception as e:
-                st.error(f"Geocoding failed: {e}")
-        else:
-            st.warning("Unable to retrieve your location.")
-
+# Run search
 if st.button("Click Here To Search"):
     st.session_state["current_location"] = user_location
     st.session_state["search_expanded"] = False
@@ -151,7 +130,7 @@ if st.button("Click Here To Search"):
 
     status_placeholder.markdown("### Please wait for The Fixe...")
     subtext_placeholder.markdown(
-        "<p style='font-size: 0.9em; color: white;'>(be patient, weâre cooking)</p>", unsafe_allow_html=True
+        "<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True
     )
 
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
@@ -186,6 +165,7 @@ if st.button("Click Here To Search"):
         with animation_placeholder.container():
             st_lottie(finished_animation, height=300, key="finished")
 
+# --------- Display Results ---------
 location_to_display = st.session_state.get("current_location", user_location)
 results = load_restaurants_for_location(location_to_display)
 
@@ -209,3 +189,51 @@ if results:
             st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
 else:
     st.info("No prix fixe menus stored yet for this location.")
+
+# --------- Expand Search Option ---------
+if "search_expanded" not in st.session_state:
+    st.session_state["search_expanded"] = False
+
+if results and not st.session_state["search_expanded"]:
+    st.markdown("---")
+    st.markdown("### Not enough deals?")
+    if st.button("Expand Search"):
+        st.session_state["search_expanded"] = True
+
+        exp_status = st.empty()
+        exp_animation = st.empty()
+
+        with exp_status.container():
+            st.markdown("### We’re cooking a big meal—have patience for The Fixe...")
+
+        cooking_animation = load_lottie_local("Animation - 1748132250829.json")
+        if cooking_animation:
+            with exp_animation.container():
+                st_lottie(cooking_animation, height=300, key="cooking_expand")
+
+        try:
+            raw_places = text_search_restaurants(location_to_display)
+            places_with_websites = [p for p in raw_places if p.get("website")]
+            prioritized = prioritize_places(places_with_websites)
+
+            enriched = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                expanded_results = list(executor.map(lambda p: process_place(p, location_to_display), prioritized))
+            enriched = [r for r in expanded_results if r]
+
+            if enriched:
+                store_restaurants(enriched)
+                st.success("Expanded results saved.")
+            else:
+                st.info("No additional matches found.")
+
+        except Exception as e:
+            st.error(f"Expanded scrape failed: {e}")
+
+        with exp_status.container():
+            st.markdown("### The Fixe is here. Scroll up.")
+
+        finished_animation = load_lottie_local("Finished.json")
+        if finished_animation:
+            with exp_animation.container():
+                st_lottie(finished_animation, height=300, key="finished_expand")
