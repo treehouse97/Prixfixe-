@@ -13,7 +13,6 @@ from streamlit_js_eval import get_geolocation
 
 DB_FILE = "prix_fixe.db"
 
-# --------- Database setup ---------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -34,7 +33,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --------- Data Handling ---------
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -63,12 +61,10 @@ def load_restaurants_for_location(location):
     conn.close()
     return results
 
-# --------- Lottie Loader ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
 
-# --------- Target Prioritization ---------
 def prioritize_places(places):
     keywords = ["bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"]
     def score(place):
@@ -76,7 +72,6 @@ def prioritize_places(places):
         return -1 if any(k in name for k in keywords) else 0
     return sorted(places, key=score)
 
-# --------- Scraping Logic ---------
 def process_place(place, location):
     name = place.get("name", "")
     address = place.get("vicinity", "")
@@ -104,10 +99,8 @@ def process_place(place, location):
 
     return None
 
-# --------- Streamlit UI ---------
 st.title("The Fixe")
 
-# Initialize DB once per session
 if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
@@ -117,12 +110,14 @@ if st.button("Reset Entire Database"):
     st.session_state["db_initialized"] = True
     st.success("Database was reset and rebuilt.")
 
-# Location input
 st.subheader("Search Area")
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
+    user_location = st.text_input(
+        "Enter a town, hamlet, or neighborhood",
+        value=st.session_state.get("user_location", "Islip, NY")
+    )
 
 with col2:
     if st.button("Use My Location"):
@@ -130,12 +125,23 @@ with col2:
         if result and result.get("latitude") and result.get("longitude"):
             lat = result["latitude"]
             lon = result["longitude"]
-            user_location = f"{lat},{lon}"
-            st.success("Using your current location.")
+            coords = f"{lat},{lon}"
+
+            try:
+                geo_url = "https://maps.googleapis.com/maps/api/geocode/json"
+                params = {"latlng": coords, "key": GOOGLE_API_KEY}
+                resp = requests.get(geo_url, params=params).json()
+                if resp["status"] == "OK":
+                    formatted = resp["results"][0]["formatted_address"]
+                    st.session_state["user_location"] = formatted
+                    st.success(f"Using location: {formatted}")
+                else:
+                    st.warning("Could not geocode location.")
+            except Exception as e:
+                st.error(f"Geocoding failed: {e}")
         else:
             st.warning("Unable to retrieve your location.")
 
-# Run search
 if st.button("Click Here To Search"):
     st.session_state["current_location"] = user_location
     st.session_state["search_expanded"] = False
@@ -146,7 +152,7 @@ if st.button("Click Here To Search"):
 
     status_placeholder.markdown("### Please wait for The Fixe...")
     subtext_placeholder.markdown(
-        "<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True
+        "<p style='font-size: 0.9em; color: white;'>(be patient, weâre cooking)</p>", unsafe_allow_html=True
     )
 
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
@@ -181,7 +187,6 @@ if st.button("Click Here To Search"):
         with animation_placeholder.container():
             st_lottie(finished_animation, height=300, key="finished")
 
-# --------- Display Results ---------
 location_to_display = st.session_state.get("current_location", user_location)
 results = load_restaurants_for_location(location_to_display)
 
@@ -202,6 +207,7 @@ if results:
         readable_label = grouped[key][0][3]
         st.markdown(f"#### {readable_label}")
         for name, address, website, _ in grouped[key]:
-            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
+            st.markdown(f"**{name}** - {address}  
+[Visit Site]({website})")
 else:
     st.info("No prix fixe menus stored yet for this location.")
