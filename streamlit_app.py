@@ -127,6 +127,7 @@ if st.button("Click Here To Search"):
     status_placeholder = st.empty()
     animation_placeholder = st.empty()
 
+    # WAIT MESSAGE
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
         st.markdown("<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True)
@@ -155,6 +156,7 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
+    # DONE MESSAGE
     with status_placeholder.container():
         st.markdown("### The Fixe is in. Scroll to the bottom.")
 
