@@ -90,16 +90,18 @@ if st.button("Click Here To Reset"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-status_placeholder = st.empty()
-
 if st.button("Click Here To Search"):
+    # Show status and animation in order
+    status_placeholder = st.empty()
+    animation_placeholder = st.empty()
+
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
 
-    # Load and show local Lottie animation
     lottie_animation = load_lottie_local("Animation - 1748132250829.json")
     if lottie_animation:
-        st_lottie(lottie_animation, height=300, key="cooking")
+        with animation_placeholder.container():
+            st_lottie(lottie_animation, height=300, key="cooking")
 
     try:
         raw_places = text_search_restaurants(user_location)
@@ -139,6 +141,7 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
+    # Update message once scraping is done
     status_placeholder.markdown("### The Fixe is complete. Scroll to the bottom.")
 
 # --------- Display Results ---------
