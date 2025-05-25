@@ -4,3 +4,4 @@ playwright
 streamlit
 PyMuPDF
 streamlit-lottie
+streamlit-js-eval
