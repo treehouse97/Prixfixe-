@@ -106,11 +106,14 @@ def process_place(place, location):
 # --------- Streamlit UI ---------
 st.title("The Fixe")
 
-# Force-reset the database on every app load
-init_db()
+# Initialize DB only once per session
+if "db_initialized" not in st.session_state:
+    init_db()
+    st.session_state["db_initialized"] = True
 
 if st.button("Reset Entire Database"):
     init_db()
+    st.session_state["db_initialized"] = True
     st.success("Database was reset and rebuilt.")
 
 st.subheader("Search Area")
