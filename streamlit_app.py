@@ -129,6 +129,7 @@ if st.button("Click Here To Search"):
 
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
+        st.markdown("<p style='font-size: 0.8em; color: gray;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True)
 
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
     if cooking_animation:
@@ -197,6 +198,17 @@ if results and not st.session_state["search_expanded"]:
     if st.button("Expand Search"):
         st.session_state["search_expanded"] = True
 
+        exp_status = st.empty()
+        exp_animation = st.empty()
+
+        with exp_status.container():
+            st.markdown("### We’re cooking a big meal—have patience for The Fixe...")
+
+        cooking_animation = load_lottie_local("Animation - 1748132250829.json")
+        if cooking_animation:
+            with exp_animation.container():
+                st_lottie(cooking_animation, height=300, key="cooking_expand")
+
         try:
             raw_places = text_search_restaurants(location_to_display)
             places_with_websites = [p for p in raw_places if p.get("website")]
@@ -213,7 +225,13 @@ if results and not st.session_state["search_expanded"]:
             else:
                 st.info("No additional matches found.")
 
-            st.rerun()
-
         except Exception as e:
             st.error(f"Expanded scrape failed: {e}")
+
+        with exp_status.container():
+            st.markdown("### The Fixe is here. Scroll up.")
+
+        finished_animation = load_lottie_local("Finished.json")
+        if finished_animation:
+            with exp_animation.container():
+                st_lottie(finished_animation, height=300, key="finished_expand")
