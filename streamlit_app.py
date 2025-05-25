@@ -124,7 +124,7 @@ if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
 
-        # --------- Pre-filter and limit to 25 ---------
+        # --------- Pre-filter, prioritize, and limit to 25 ---------
         places_with_websites = [p for p in raw_places if p.get("website")]
         prioritized = prioritize_places(places_with_websites)[:25]
 
