@@ -118,6 +118,11 @@ def process_place(place, location):
 st.title("The Fixe")
 ensure_db()
 
+# Global reset button
+if st.button("Reset Entire Database"):
+    init_db()
+    st.success("Database was reset and rebuilt.")
+
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
