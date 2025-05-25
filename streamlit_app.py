@@ -129,7 +129,7 @@ if st.button("Click Here To Search"):
 
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
-        st.markdown("<p style='font-size: 0.8em; color: gray;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True)
 
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
     if cooking_animation:
