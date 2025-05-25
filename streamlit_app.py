@@ -142,13 +142,13 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     # Update message once scraping is done
-    status_placeholder.markdown("### The Fixe is complete. Scroll to the bottom.")
+    status_placeholder.markdown("### The Fixe is in. Scroll to the bottom.")
 
 # --------- Display Results ---------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Detected Prix Fixe Menus")
+        st.subheader("Click on the websites for more info on the deals")
 
         # Group results by label
         grouped = {}
