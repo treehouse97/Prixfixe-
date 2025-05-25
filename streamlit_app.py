@@ -64,15 +64,7 @@ def load_restaurants_for_location(location):
 
 # --------- Lottie Loader ---------
 def load_lottie_local(filepath):
-    # Securely handle file paths
-    base_dir = os.path.abspath("animations")  # Define the allowed directory
-    requested_path = os.path.abspath(filepath)
-
-    # Check if the requested path is within the allowed directory
-    if not requested_path.startswith(base_dir):
-        raise ValueError("Access to this file path is not allowed")
-
-    with open(requested_path, "r") as f:
+    with open(filepath, "r") as f:
         return json.load(f)
 
 # --------- Target Prioritization ---------
@@ -197,3 +189,51 @@ if results:
             st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
 else:
     st.info("No prix fixe menus stored yet for this location.")
+
+# --------- Expand Search Option ---------
+if "search_expanded" not in st.session_state:
+    st.session_state["search_expanded"] = False
+
+if results and not st.session_state["search_expanded"]:
+    st.markdown("---")
+    st.markdown("### Not enough deals?")
+    if st.button("Expand Search"):
+        st.session_state["search_expanded"] = True
+
+        exp_status = st.empty()
+        exp_animation = st.empty()
+
+        with exp_status.container():
+            st.markdown("### We’re cooking a big meal—have patience for The Fixe...")
+
+        cooking_animation = load_lottie_local("Animation - 1748132250829.json")
+        if cooking_animation:
+            with exp_animation.container():
+                st_lottie(cooking_animation, height=300, key="cooking_expand")
+
+        try:
+            raw_places = text_search_restaurants(location_to_display)
+            places_with_websites = [p for p in raw_places if p.get("website")]
+            prioritized = prioritize_places(places_with_websites)
+
+            enriched = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                expanded_results = list(executor.map(lambda p: process_place(p, location_to_display), prioritized))
+            enriched = [r for r in expanded_results if r]
+
+            if enriched:
+                store_restaurants(enriched)
+                st.success("Expanded results saved.")
+            else:
+                st.info("No additional matches found.")
+
+        except Exception as e:
+            st.error(f"Expanded scrape failed: {e}")
+
+        with exp_status.container():
+            st.markdown("### The Fixe is here. Scroll up.")
+
+        finished_animation = load_lottie_local("Finished.json")
+        if finished_animation:
+            with exp_animation.container():
+                st_lottie(finished_animation, height=300, key="finished_expand")
