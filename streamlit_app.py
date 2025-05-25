@@ -70,7 +70,7 @@ def prioritize_places(places):
         return -1 if any(k in name for k in keywords) else 0
     return sorted(places, key=score)
 
-# --------- Scraping Logic (now returns status) ---------
+# --------- Scraping Logic with Status ---------
 def process_place_verbose(place):
     name = place.get("name", "")
     address = place.get("vicinity", "")
@@ -124,14 +124,13 @@ if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
 
-        # --------- Pre-filtering & prioritization ---------
+        # --------- Filter and prioritize ---------
         places_with_websites = [p for p in raw_places if p.get("website")]
         prioritized = prioritize_places(places_with_websites)
 
         # --------- Scraping with live progress ---------
         enriched = []
         progress_area = st.container()
-        progress_msgs = {}
 
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(process_place_verbose, p): p for p in prioritized}
@@ -139,15 +138,19 @@ if st.button("Click Here To Search"):
                 result = future.result()
                 name = result["name"]
                 status = result["status"]
-                msg_key = name.lower().replace(" ", "_")
 
                 with progress_area:
-                    st.info(f"{name}: {status}")
+                    if "match found" in status:
+                        st.success(f"{name}: {status}")
+                    elif "no deal" in status:
+                        st.warning(f"{name}: {status}")
+                    else:
+                        st.info(f"{name}: {status}")
 
                 if result["data"]:
                     enriched.append(result["data"])
 
-        # --------- Store & wrap up ---------
+        # --------- Store results ---------
         if enriched:
             store_restaurants(enriched)
             st.success("New results saved.")
