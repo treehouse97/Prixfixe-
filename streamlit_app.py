@@ -8,7 +8,7 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
-from streamlit_lottie import st_lottie  # Animation support
+from streamlit_lottie import st_lottie
 
 DB_FILE = "prix_fixe.db"
 
@@ -58,7 +58,7 @@ def load_all_restaurants():
     conn.close()
     return results
 
-# --------- Load Local Lottie Animation ---------
+# --------- Lottie Loaders ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -91,17 +91,18 @@ st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 if st.button("Click Here To Search"):
-    # Show status and animation in order
+    # Set up placeholders
     status_placeholder = st.empty()
     animation_placeholder = st.empty()
 
+    # Show waiting message and first animation
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
 
-    lottie_animation = load_lottie_local("Animation - 1748132250829.json")
-    if lottie_animation:
+    cooking_animation = load_lottie_local("Animation - 1748132250829.json")
+    if cooking_animation:
         with animation_placeholder.container():
-            st_lottie(lottie_animation, height=300, key="cooking")
+            st_lottie(cooking_animation, height=300, key="cooking")
 
     try:
         raw_places = text_search_restaurants(user_location)
@@ -141,14 +142,19 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # Update message once scraping is done
-    status_placeholder.markdown("### The Fixe is in. Scroll to the bottom.")
+    # Show completion message and finished animation
+    with status_placeholder.container():
+        st.markdown("### The Fixe is complete. Scroll to the bottom.")
+    finished_animation = load_lottie_local("Finished.json")
+    if finished_animation:
+        with animation_placeholder.container():
+            st_lottie(finished_animation, height=300, key="finished")
 
 # --------- Display Results ---------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Click on the websites for more info on the deals")
+        st.subheader("Detected Prix Fixe Menus")
 
         # Group results by label
         grouped = {}
@@ -164,7 +170,7 @@ try:
 
         # Display grouped results
         for key in sorted_labels:
-            readable_label = grouped[key][0][3]  # Use original casing from first match
+            readable_label = grouped[key][0][3]  # Original casing
             st.markdown(f"#### {readable_label}")
             for name, address, website, _ in grouped[key]:
                 st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
