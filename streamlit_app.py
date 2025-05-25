@@ -109,10 +109,6 @@ st.title("The Fixe")
 # Force-reset the database on every app load
 init_db()
 
-# Optional: visible confirmation
-# st.info("Database was automatically reset on load.")
-
-# Manual reset still available if desired
 if st.button("Reset Entire Database"):
     init_db()
     st.success("Database was reset and rebuilt.")
@@ -123,6 +119,7 @@ user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, N
 # Run search
 if st.button("Click Here To Search"):
     st.session_state["current_location"] = user_location
+    st.session_state["search_expanded"] = False
 
     status_placeholder = st.empty()
     animation_placeholder = st.empty()
@@ -186,3 +183,34 @@ if results:
             st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
 else:
     st.info("No prix fixe menus stored yet for this location.")
+
+# --------- Expand Search Option ---------
+if "search_expanded" not in st.session_state:
+    st.session_state["search_expanded"] = False
+
+if results and not st.session_state["search_expanded"]:
+    st.markdown("---")
+    st.markdown("### Not enough deals?")
+    if st.button("Expand Search"):
+        st.session_state["search_expanded"] = True
+
+        try:
+            raw_places = text_search_restaurants(location_to_display)
+            places_with_websites = [p for p in raw_places if p.get("website")]
+            prioritized = prioritize_places(places_with_websites)
+
+            enriched = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                expanded_results = list(executor.map(lambda p: process_place(p, location_to_display), prioritized))
+            enriched = [r for r in expanded_results if r]
+
+            if enriched:
+                store_restaurants(enriched)
+                st.success("Expanded results saved.")
+            else:
+                st.info("No additional matches found.")
+
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Expanded scrape failed: {e}")
