@@ -41,11 +41,15 @@ def ensure_location_column():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
-        c.execute("SELECT location FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE restaurants ADD COLUMN location TEXT")
-        conn.commit()
-    conn.close()
+        c.execute("PRAGMA table_info(restaurants)")
+        columns = [row[1] for row in c.fetchall()]
+        if "location" not in columns:
+            c.execute("ALTER TABLE restaurants ADD COLUMN location TEXT")
+            conn.commit()
+    except Exception as e:
+        st.error(f"Schema check failed: {e}")
+    finally:
+        conn.close()
 
 # --------- Data Handling ---------
 def store_restaurants(restaurants):
@@ -120,7 +124,7 @@ def process_place(place, location):
 # --------- Streamlit UI ---------
 st.title("The Fixe")
 
-# Ensure DB and patch schema
+# Ensure DB and schema BEFORE anything else
 ensure_db()
 ensure_location_column()
 
