@@ -98,7 +98,7 @@ if st.button("Click Here To Search"):
         st.markdown("### Please wait for The Fixe...")
 
     # Display Lottie cooking animation
-    lottie_url = "https://lottie.host/da46d4dd-2c65-4f4a-a4c2-2cb8c8e4caa6/iMqqqAh7wI.json"
+    lottie_url = "https://lottiefiles.com/free-animation/cooking-pi4fdhrTp0"
     lottie_animation = load_lottie_url(lottie_url)
     if lottie_animation:
         st_lottie(lottie_animation, height=300, key="cooking")
