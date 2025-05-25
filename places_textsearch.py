@@ -29,7 +29,7 @@ def text_search_restaurants(location_name):
 
             details_params = {
                 "place_id": place_id,
-                "fields": "name,vicinity,website",
+                "fields": "name,vicinity,website,photo,rating,user_ratings_total",
                 "key": GOOGLE_API_KEY
             }
 
