@@ -37,6 +37,16 @@ def ensure_db():
     if not os.path.exists(DB_FILE):
         init_db()
 
+def ensure_location_column():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT location FROM restaurants LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE restaurants ADD COLUMN location TEXT")
+        conn.commit()
+    conn.close()
+
 # --------- Data Handling ---------
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
@@ -109,7 +119,10 @@ def process_place(place, location):
 
 # --------- Streamlit UI ---------
 st.title("The Fixe")
+
+# Ensure DB and patch schema
 ensure_db()
+ensure_location_column()
 
 # Global reset button
 if st.button("Reset Entire Database"):
