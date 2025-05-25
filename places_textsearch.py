@@ -1,5 +1,4 @@
 import requests
-import streamlit as st
 from settings import GOOGLE_API_KEY
 
 def text_search_restaurants(location_name):
@@ -19,8 +18,7 @@ def text_search_restaurants(location_name):
         response = requests.get(base_url, params=params)
         try:
             data = response.json()
-        except Exception as e:
-            st.error(f"Failed to parse Text Search response: {e}")
+        except Exception:
             break
 
         for result in data.get("results", []):
@@ -38,8 +36,7 @@ def text_search_restaurants(location_name):
             try:
                 detail_response = requests.get(detail_url, params=details_params)
                 details = detail_response.json().get("result", {})
-            except Exception as e:
-                st.warning(f"Failed to fetch details for place_id={place_id}: {e}")
+            except Exception:
                 continue
 
             website = details.get("website", "")
@@ -49,8 +46,7 @@ def text_search_restaurants(location_name):
                     "vicinity": details.get("vicinity", ""),
                     "website": website
                 })
-            else:
-                st.warning(f"[TextSearch] No website for: {details.get('name', 'Unknown')} ({details.get('vicinity', '')})")
+            # No else — silent skip
 
         next_page_token = data.get("next_page_token")
         if not next_page_token:
