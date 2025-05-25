@@ -3,7 +3,7 @@ import sqlite3
 import os
 import json
 import requests
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
@@ -58,7 +58,6 @@ def load_all_restaurants():
     conn.close()
     return results
 
-# --------- Lottie Loaders ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
         return json.load(f)
@@ -71,16 +70,15 @@ def prioritize_places(places):
         return -1 if any(k in name for k in keywords) else 0
     return sorted(places, key=score)
 
-# --------- Parallel Scrape Handler ---------
-def process_place(place):
+# --------- Scraping Logic (now returns status) ---------
+def process_place_verbose(place):
     name = place.get("name", "")
     address = place.get("vicinity", "")
     website = place.get("website", "")
 
     if not website:
-        return None
+        return {"name": name, "status": "skipped (no website)", "data": None}
 
-    # Check cache
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
@@ -88,17 +86,17 @@ def process_place(place):
     conn.close()
 
     if result:
-        return None
+        return {"name": name, "status": "cached", "data": None}
 
     try:
         text = fetch_website_text(website)
         matched, label = detect_prix_fixe_detailed(text)
         if matched:
-            return (name, address, website, 1, label, text)
+            return {"name": name, "status": f"match found ({label})", "data": (name, address, website, 1, label, text)}
+        else:
+            return {"name": name, "status": "no deal found", "data": None}
     except:
-        return None
-
-    return None
+        return {"name": name, "status": "error", "data": None}
 
 # --------- Streamlit Interface ---------
 st.title("The Fixe")
@@ -126,17 +124,30 @@ if st.button("Click Here To Search"):
     try:
         raw_places = text_search_restaurants(user_location)
 
-        # ------- Pre-filter and prioritize ---------
+        # --------- Pre-filtering & prioritization ---------
         places_with_websites = [p for p in raw_places if p.get("website")]
         prioritized = prioritize_places(places_with_websites)
-        # -------------------------------------------
 
-        # ------- Parallel scraping ---------
+        # --------- Scraping with live progress ---------
+        enriched = []
+        progress_area = st.container()
+        progress_msgs = {}
+
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(process_place, prioritized))
-        enriched = [r for r in results if r]
-        # -----------------------------------
+            futures = {executor.submit(process_place_verbose, p): p for p in prioritized}
+            for future in as_completed(futures):
+                result = future.result()
+                name = result["name"]
+                status = result["status"]
+                msg_key = name.lower().replace(" ", "_")
 
+                with progress_area:
+                    st.info(f"{name}: {status}")
+
+                if result["data"]:
+                    enriched.append(result["data"])
+
+        # --------- Store & wrap up ---------
         if enriched:
             store_restaurants(enriched)
             st.success("New results saved.")
@@ -147,7 +158,7 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     with status_placeholder.container():
-        st.markdown("### The Fixe is in. Scroll to the bottom.")
+        st.markdown("### The Fixe is complete. Scroll to the bottom.")
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
@@ -158,21 +169,18 @@ if st.button("Click Here To Search"):
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("click on the websites to get more details on the deals")
+        st.subheader("Detected Prix Fixe Menus")
 
-        # Group results by label
         grouped = {}
         for name, address, website, label in all_restaurants:
             grouped.setdefault(label.lower(), []).append((name, address, website, label))
 
-        # Prioritize prix fixe–style labels
         prix_fixe_terms = ["prix fixe", "pre fixe", "price fixe"]
         def is_prix_fixe(label):
             return any(term in label for term in prix_fixe_terms)
 
         sorted_labels = sorted(grouped.keys(), key=lambda k: (0 if is_prix_fixe(k) else 1, k))
 
-        # Display grouped results
         for key in sorted_labels:
             readable_label = grouped[key][0][3]
             st.markdown(f"#### {readable_label}")
