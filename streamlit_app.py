@@ -6,43 +6,10 @@ import requests
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
-from streamlit_lottie import st_lottie
 
-# --------- Style Injection ---------
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+from streamlit_lottie import st_lottie  # Animation support
 
-    html, body, [class*="css"]  {
-        font-family: 'Inter', sans-serif;
-        background-color: #f9f8f4;
-    }
-
-    .main > div {
-        padding-top: 1rem;
-    }
-
-    h1, h2, h3, h4 {
-        color: #402E32;
-    }
-
-    .block-container {
-        padding: 2rem 2rem;
-    }
-
-    </style>
-""", unsafe_allow_html=True)
-
-# --------- Constants ---------
 DB_FILE = "prix_fixe.db"
-LOTTIE_URL = "https://lottie.host/da46d4dd-2c65-4f4a-a4c2-2cb8c8e4caa6/iMqqqAh7wI.json"
-
-# --------- Lottie Helper ---------
-def load_lottie_url(url):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
 
 # --------- Database setup ---------
 def init_db():
@@ -90,7 +57,29 @@ def load_all_restaurants():
     conn.close()
     return results
 
-# --------- Streamlit App ---------
+def load_lottie_url(url):
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    return r.json()
+
+# --------- Geocoding ---------
+def geocode_location(place_name):
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {"address": place_name, "key": GOOGLE_API_KEY}
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data["status"] == "OK":
+            location = data["results"][0]["geometry"]["location"]
+            return f"{location['lat']},{location['lng']}"
+        else:
+            st.error(f"Geocoding failed: {data['status']}")
+    except Exception as e:
+        st.error(f"Error geocoding location: {e}")
+    return None
+
+# --------- Streamlit Interface ---------
 st.title("The Fixe")
 ensure_db()
 
@@ -101,18 +90,18 @@ if st.button("Click Here To Reset"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-# UI placeholders for status and animation
+# Placeholder for dynamic status
 status_placeholder = st.empty()
-lottie_container = st.empty()
 
 if st.button("Click Here To Search"):
-    # Show animation and loading text
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
-    lottie_animation = load_lottie_url(LOTTIE_URL)
+
+    # Display Lottie cooking animation
+    lottie_url = "https://lottie.host/da46d4dd-2c65-4f4a-a4c2-2cb8c8e4caa6/iMqqqAh7wI.json"
+    lottie_animation = load_lottie_url(lottie_url)
     if lottie_animation:
-        with lottie_container.container():
-            st_lottie(lottie_animation, height=300, key="cooking")
+        st_lottie(lottie_animation, height=300, key="cooking")
 
     try:
         raw_places = text_search_restaurants(user_location)
@@ -123,6 +112,7 @@ if st.button("Click Here To Search"):
             address = place.get("vicinity", "")
             website = place.get("website", "")
 
+            # Check cache
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
             c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
@@ -151,32 +141,33 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # Replace animation with completion message
-    lottie_container.empty()
+    # Update status to completion message
     status_placeholder.markdown("### The Fixe is complete. Scroll to the bottom.")
 
 # --------- Display Results ---------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.markdown("## Detected Prix Fixe Menus")
+        st.subheader("Detected Prix Fixe Menus")
 
+        # Group results by label
         grouped = {}
         for name, address, website, label in all_restaurants:
             grouped.setdefault(label.lower(), []).append((name, address, website, label))
 
         # Prioritize prix fixe–style labels
-        prix_fixe_labels = [k for k in grouped if any(term in k for term in ["prix fixe", "pre fixe", "price fixe"])]
-        other_labels = sorted([k for k in grouped if k not in prix_fixe_labels])
+        prix_fixe_terms = ["prix fixe", "pre fixe", "price fixe"]
+        def is_prix_fixe(label):
+            return any(term in label for term in prix_fixe_terms)
 
-        ordered_labels = prix_fixe_labels + other_labels
+        sorted_labels = sorted(grouped.keys(), key=lambda k: (0 if is_prix_fixe(k) else 1, k))
 
-        for key in ordered_labels:
-            readable_label = grouped[key][0][3]  # Original casing from first item
-            st.markdown(f"### {readable_label}")
+        # Display grouped results
+        for key in sorted_labels:
+            readable_label = grouped[key][0][3]  # Use original casing from first match
+            st.markdown(f"#### {readable_label}")
             for name, address, website, _ in grouped[key]:
-                st.markdown(f"**{name}**  \n{address}  \n[Visit Site]({website})", unsafe_allow_html=True)
-                st.markdown("---")
+                st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
     else:
         st.info("No prix fixe menus stored yet.")
 except Exception as e:
