@@ -33,24 +33,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-def ensure_db():
-    if not os.path.exists(DB_FILE):
-        init_db()
-
-def ensure_location_column():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    try:
-        c.execute("PRAGMA table_info(restaurants)")
-        columns = [row[1] for row in c.fetchall()]
-        if "location" not in columns:
-            c.execute("ALTER TABLE restaurants ADD COLUMN location TEXT")
-            conn.commit()
-    except Exception as e:
-        st.error(f"Schema check failed: {e}")
-    finally:
-        conn.close()
-
 # --------- Data Handling ---------
 def store_restaurants(restaurants):
     conn = sqlite3.connect(DB_FILE)
@@ -124,11 +106,13 @@ def process_place(place, location):
 # --------- Streamlit UI ---------
 st.title("The Fixe")
 
-# Ensure DB and schema BEFORE anything else
-ensure_db()
-ensure_location_column()
+# Force-reset the database on every app load
+init_db()
 
-# Global reset button
+# Optional: visible confirmation
+# st.info("Database was automatically reset on load.")
+
+# Manual reset still available if desired
 if st.button("Reset Entire Database"):
     init_db()
     st.success("Database was reset and rebuilt.")
