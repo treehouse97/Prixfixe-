@@ -125,12 +125,13 @@ if st.button("Click Here To Search"):
     st.session_state["search_expanded"] = False
 
     status_placeholder = st.empty()
+    subtext_placeholder = st.empty()
     animation_placeholder = st.empty()
 
-    # WAIT MESSAGE
-    with status_placeholder.container():
-        st.markdown("### Please wait for The Fixe...")
-        st.markdown("<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True)
+    status_placeholder.markdown("### Please wait for The Fixe...")
+    subtext_placeholder.markdown(
+        "<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True
+    )
 
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
     if cooking_animation:
@@ -156,9 +157,8 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # DONE MESSAGE
-    with status_placeholder.container():
-        st.markdown("### The Fixe is in. Scroll to the bottom.")
+    status_placeholder.markdown("### The Fixe is in. Scroll to the bottom.")
+    subtext_placeholder.empty()
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
