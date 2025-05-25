@@ -66,13 +66,6 @@ def load_restaurants_for_location(location):
     conn.close()
     return results
 
-def delete_location_results(location):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM restaurants WHERE location = ?", (location,))
-    conn.commit()
-    conn.close()
-
 # --------- Lottie Loader ---------
 def load_lottie_local(filepath):
     with open(filepath, "r") as f:
@@ -126,11 +119,6 @@ if st.button("Reset Entire Database"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-# Delete specific location's cached data
-if st.button("Clear This Location's Cache"):
-    delete_location_results(user_location)
-    st.success(f"Cache cleared for {user_location}.")
-
 # Run search
 if st.button("Click Here To Search"):
     st.session_state["current_location"] = user_location
@@ -166,7 +154,7 @@ if st.button("Click Here To Search"):
         st.error(f"Scrape failed: {e}")
 
     with status_placeholder.container():
-        st.markdown("### The Fixe is complete. Scroll to the bottom.")
+        st.markdown("### The Fixe is in. Scroll to the bottom.")
 
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
@@ -178,7 +166,7 @@ location_to_display = st.session_state.get("current_location", user_location)
 results = load_restaurants_for_location(location_to_display)
 
 if results:
-    st.subheader("Detected Prix Fixe Menus")
+    st.subheader("Click on the websites to see the deals.")
 
     grouped = {}
     for name, address, website, label in results:
