@@ -46,7 +46,7 @@ def store_restaurants(restaurants):
                 VALUES (?, ?, ?, ?, ?, ?)
             """, r)
         except Exception as e:
-            print(f"Insert failed for {r}: {e}")
+            pass  # Fail silently
     conn.commit()
     conn.close()
 
