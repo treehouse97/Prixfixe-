@@ -9,6 +9,7 @@ from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
 from streamlit_lottie import st_lottie
+from concurrent.futures import ThreadPoolExecutor
 
 DB_FILE = "prix_fixe.db"
 
@@ -79,6 +80,35 @@ def geocode_location(place_name):
         st.error(f"Error geocoding location: {e}")
     return None
 
+# --------- Parallel Scrape Handler ---------
+def process_place(place):
+    name = place.get("name", "")
+    address = place.get("vicinity", "")
+    website = place.get("website", "")
+
+    if not website:
+        return None
+
+    # Check cache
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
+    result = c.fetchone()
+    conn.close()
+
+    if result:
+        return None
+
+    try:
+        text = fetch_website_text(website)
+        matched, label = detect_prix_fixe_detailed(text)
+        if matched:
+            return (name, address, website, 1, label, text)
+    except:
+        return None
+
+    return None
+
 # --------- Streamlit Interface ---------
 st.title("The Fixe")
 ensure_db()
@@ -91,11 +121,9 @@ st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 if st.button("Click Here To Search"):
-    # Set up placeholders
     status_placeholder = st.empty()
     animation_placeholder = st.empty()
 
-    # Show waiting message and first animation
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
 
@@ -106,32 +134,12 @@ if st.button("Click Here To Search"):
 
     try:
         raw_places = text_search_restaurants(user_location)
-        enriched = []
 
-        for place in raw_places:
-            name = place.get("name", "")
-            address = place.get("vicinity", "")
-            website = place.get("website", "")
-
-            # Check cache
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=?", (name, address))
-            result = c.fetchone()
-            conn.close()
-
-            if result:
-                st.info(f"Cached: {name} - {'Yes' if result[0] else 'No'}")
-                continue
-
-            if website:
-                text = fetch_website_text(website)
-                matched, label = detect_prix_fixe_detailed(text)
-                if matched:
-                    enriched.append((name, address, website, 1, label, text))
-                    st.success(f"{name}: Match found ({label})")
-                else:
-                    st.warning(f"{name}: No deal found.")
+        # ---------- Parallel scraping begins here ----------
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(process_place, raw_places))
+        enriched = [r for r in results if r]
+        # ---------------------------------------------------
 
         if enriched:
             store_restaurants(enriched)
@@ -142,9 +150,10 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # Show completion message and finished animation
+    # Replace loading message and animation with completion
     with status_placeholder.container():
         st.markdown("### The Fixe is complete. Scroll to the bottom.")
+
     finished_animation = load_lottie_local("Finished.json")
     if finished_animation:
         with animation_placeholder.container():
@@ -170,7 +179,7 @@ try:
 
         # Display grouped results
         for key in sorted_labels:
-            readable_label = grouped[key][0][3]  # Original casing
+            readable_label = grouped[key][0][3]
             st.markdown(f"#### {readable_label}")
             for name, address, website, _ in grouped[key]:
                 st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
