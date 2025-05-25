@@ -1,17 +1,14 @@
 import streamlit as st
 import sqlite3
 import os
-import json
 import requests
-from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
-
-from scraper import fetch_website_text, detect_prix_fixe_detailed
-from places_textsearch import text_search_restaurants
-from settings import GOOGLE_API_KEY
+from concurrent.futures import ThreadPoolExecutor
 from streamlit_lottie import st_lottie
 
 DB_FILE = "prix_fixe.db"
+YELP_API_KEY = "YOUR_YELP_API_KEY"  # Replace with your Yelp API Key
+YELP_API_URL = "https://api.yelp.com/v3/businesses/search"
 
 # --------- Database setup ---------
 def init_db():
@@ -39,6 +36,22 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
+# --------- Yelp API Call ---------
+def fetch_yelp_data(location):
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    params = {
+        "location": location,
+        "categories": "restaurants",
+        "limit": 25,  # Fetch up to 25 restaurants
+        "sort_by": "rating"
+    }
+    response = requests.get(YELP_API_URL, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.json().get("businesses", [])
+    else:
+        st.error(f"Failed to fetch data from Yelp: {response.status_code}")
+        return []
 
 # --------- Data Handling ---------
 def store_restaurants(restaurants):
@@ -77,38 +90,20 @@ def load_lottie_local(filepath):
 # --------- Scraping Logic ---------
 def process_place(place, location):
     name = place.get("name", "")
-    address = place.get("vicinity", "")
-    website = place.get("website", "")
-    latitude = place.get("geometry", {}).get("location", {}).get("lat")
-    longitude = place.get("geometry", {}).get("location", {}).get("lng")
+    address = ", ".join(place.get("location", {}).get("display_address", []))
+    website = place.get("url", "")
+    latitude = place.get("coordinates", {}).get("latitude")
+    longitude = place.get("coordinates", {}).get("longitude")
+    menu_images = place.get("image_url", "")
+    ambiance_images = place.get("image_url", "")  # Using the same image for now
+    reviews = place.get("review_count", 0)
+    rating = place.get("rating", 0.0)
+    
+    # Mocking prix fixe detection here for simplicity
+    has_prix_fixe = 1 if "prix fixe" in name.lower() else 0
+    label = "Prix Fixe Menu" if has_prix_fixe else "Standard Menu"
 
-    if not website:
-        return None
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT has_prix_fixe FROM restaurants WHERE name=? AND address=? AND location=?", (name, address, location))
-    result = c.fetchone()
-    conn.close()
-
-    if result:
-        return None
-
-    # Fetch additional data
-    menu_images = f"https://source.unsplash.com/600x400/?menu,{name}"
-    ambiance_images = f"https://source.unsplash.com/600x400/?restaurant,{name}"
-    reviews = "Great ambiance and delicious prix fixe menu!"  # Placeholder
-    rating = 4.5  # Placeholder
-
-    try:
-        text = fetch_website_text(website)
-        matched, label = detect_prix_fixe_detailed(text)
-        if matched:
-            return (name, address, website, 1, label, text, location, menu_images, ambiance_images, reviews, rating, latitude, longitude)
-    except:
-        return None
-
-    return None
+    return (name, address, website, has_prix_fixe, label, None, location, menu_images, ambiance_images, f"{reviews} reviews", rating, latitude, longitude)
 
 # --------- Streamlit UI ---------
 st.title("The Fixe")
@@ -129,32 +124,23 @@ user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, N
 # Run search
 if st.button("Click Here To Search"):
     st.session_state["current_location"] = user_location
-    st.session_state["search_expanded"] = False
-
     status_placeholder = st.empty()
-    subtext_placeholder = st.empty()
     animation_placeholder = st.empty()
 
     status_placeholder.markdown("### Please wait for The Fixe...")
-    subtext_placeholder.markdown(
-        "<p style='font-size: 0.9em; color: white;'>(be patient, we’re cooking)</p>", unsafe_allow_html=True
-    )
-
+    
     cooking_animation = load_lottie_local("Animation - 1748132250829.json")
     if cooking_animation:
         with animation_placeholder.container():
             st_lottie(cooking_animation, height=300, key="cooking")
 
     try:
-        raw_places = text_search_restaurants(user_location)
-        places_with_websites = [p for p in raw_places if p.get("website")]
-        prioritized = places_with_websites[:25]
+        yelp_places = fetch_yelp_data(user_location)
 
-        enriched = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(lambda p: process_place(p, user_location), prioritized))
-        enriched = [r for r in results if r]
+            results = list(executor.map(lambda p: process_place(p, user_location), yelp_places))
 
+        enriched = [r for r in results if r]
         if enriched:
             store_restaurants(enriched)
             st.success("New results saved.")
@@ -162,15 +148,10 @@ if st.button("Click Here To Search"):
             st.info("No new matches to store.")
 
     except Exception as e:
-        st.error(f"Scrape failed: {e}")
+        st.error(f"Search failed: {e}")
 
     status_placeholder.markdown("### The Fixe is in. Scroll to the bottom.")
-    subtext_placeholder.empty()
-
-    finished_animation = load_lottie_local("Finished.json")
-    if finished_animation:
-        with animation_placeholder.container():
-            st_lottie(finished_animation, height=300, key="finished")
+    animation_placeholder.empty()
 
 # --------- Display Results ---------
 location_to_display = st.session_state.get("current_location", user_location)
@@ -178,16 +159,16 @@ results = load_restaurants_for_location(location_to_display)
 
 if results:
     st.subheader("Click on the websites to see the deals.")
-
     data = []
     for name, address, website, label, menu_images, ambiance_images, reviews, rating, latitude, longitude in results:
         st.markdown(f"### {name}")
         st.markdown(f"**Address:** {address}")
         st.markdown(f"**Rating:** {rating} ⭐")
         st.markdown(f"**Reviews:** {reviews}")
-        st.image([menu_images, ambiance_images], caption=["Menu", "Ambiance"], use_column_width=True)
+        st.image([menu_images, ambiance_images], caption=["Menu", "Ambiance"], use_container_width=True)
         st.markdown(f"[Visit Website]({website})")
-        data.append({"Latitude": latitude, "Longitude": longitude})
+        if latitude and longitude:
+            data.append({"Latitude": latitude, "Longitude": longitude})
 
     # Display map
     if data:
