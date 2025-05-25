@@ -4,7 +4,6 @@ import os
 import json
 import requests
 from concurrent.futures import ThreadPoolExecutor
-
 from scraper import fetch_website_text, detect_prix_fixe_detailed
 from places_textsearch import text_search_restaurants
 from settings import GOOGLE_API_KEY
@@ -207,7 +206,6 @@ if results:
         readable_label = grouped[key][0][3]
         st.markdown(f"#### {readable_label}")
         for name, address, website, _ in grouped[key]:
-            st.markdown(f"**{name}** - {address}  
-[Visit Site]({website})")
+            st.markdown(f"**{name}** - {address}  \n[Visit Site]({website})")
 else:
     st.info("No prix fixe menus stored yet for this location.")
