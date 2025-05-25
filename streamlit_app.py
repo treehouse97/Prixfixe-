@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import os
+import json
 import requests
 
 from scraper import fetch_website_text, detect_prix_fixe_detailed
@@ -57,11 +58,10 @@ def load_all_restaurants():
     conn.close()
     return results
 
-def load_lottie_url(url):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+# --------- Load Local Lottie Animation ---------
+def load_lottie_local(filepath):
+    with open(filepath, "r") as f:
+        return json.load(f)
 
 # --------- Geocoding ---------
 def geocode_location(place_name):
@@ -90,16 +90,14 @@ if st.button("Click Here To Reset"):
 st.subheader("Search Area")
 user_location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-# Placeholder for dynamic status
 status_placeholder = st.empty()
 
 if st.button("Click Here To Search"):
     with status_placeholder.container():
         st.markdown("### Please wait for The Fixe...")
 
-    # Display Lottie cooking animation
-    lottie_url = "https://lottiefiles.com/free-animation/cooking-pi4fdhrTp0"
-    lottie_animation = load_lottie_url(lottie_url)
+    # Load and show local Lottie animation
+    lottie_animation = load_lottie_local("Animation - 1748132250829.json")
     if lottie_animation:
         st_lottie(lottie_animation, height=300, key="cooking")
 
@@ -141,14 +139,13 @@ if st.button("Click Here To Search"):
     except Exception as e:
         st.error(f"Scrape failed: {e}")
 
-    # Update status to completion message
     status_placeholder.markdown("### The Fixe is complete. Scroll to the bottom.")
 
 # --------- Display Results ---------
 try:
     all_restaurants = load_all_restaurants()
     if all_restaurants:
-        st.subheader("Enjoy")
+        st.subheader("Detected Prix Fixe Menus")
 
         # Group results by label
         grouped = {}
