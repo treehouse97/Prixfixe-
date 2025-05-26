@@ -15,6 +15,16 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from places_api import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
+
+# ────────────────── compatibility helper ──────────────────────────────────────
+def safe_rerun() -> None:
+    """
+    Call st.rerun() on modern versions (≥ 1.27) or fall back to the
+    old experimental name on very old installs.
+    """
+    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+
+
 # ────────────────── per‑session database ──────────────────────────────────────
 if "db_file" not in st.session_state:
     session_db = os.path.join(
@@ -208,7 +218,7 @@ st.title("The Fixe")
 if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
-    st.experimental_rerun()
+    safe_rerun()                       # ← updated
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
@@ -281,6 +291,6 @@ if st.session_state.get("searched"):
             if st.button("Expand Search"):
                 st.session_state["expanded"] = True
                 run_search(limit=None)
-                st.experimental_rerun()
+                safe_rerun()           # ← updated
     else:
         st.info("No prix fixe menus stored yet for this location.")
