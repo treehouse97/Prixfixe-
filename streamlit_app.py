@@ -1,7 +1,10 @@
 # streamlit_app.py
 import json
+import os
 import sqlite3
+import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from math import floor
 
@@ -12,11 +15,17 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from places_api import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
-DB_FILE = "prix_fixe.db"
-LABEL_ORDER = list(PATTERNS.keys())           # canonical label order
+# ────────────────── per‑session database ──────────────────────────────────────
+if "db_file" not in st.session_state:
+    session_db = os.path.join(
+        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
+    )
+    st.session_state["db_file"] = session_db
+    st.session_state["searched"] = False          # nothing displayed yet
 
+DB_FILE = st.session_state["db_file"]
+LABEL_ORDER = list(PATTERNS.keys())
 
-# ──────────────── database helpers ────────────────────────────────────────────
 SCHEMA = """
 CREATE TABLE restaurants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,15 +42,21 @@ CREATE TABLE restaurants (
 )
 """
 
+
 def init_db() -> None:
+    """(Re)create the per‑session database."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
     conn.commit()
     conn.close()
 
+
 def ensure_schema() -> None:
-    """Upgrade an old DB that lacks the rating/photo_ref columns."""
+    """If the DB file just got created, build the table."""
+    if not os.path.exists(DB_FILE):
+        init_db()
+        return
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
@@ -51,6 +66,7 @@ def ensure_schema() -> None:
         init_db()
     else:
         conn.close()
+
 
 def store_rows(rows) -> None:
     conn = sqlite3.connect(DB_FILE)
@@ -66,6 +82,7 @@ def store_rows(rows) -> None:
     )
     conn.commit()
     conn.close()
+
 
 def fetch_records(location):
     conn = sqlite3.connect(DB_FILE)
@@ -83,24 +100,33 @@ def fetch_records(location):
     return data
 
 
-# ──────────────── utilities ───────────────────────────────────────────────────
+# ────────────────── helpers ───────────────────────────────────────────────────
 def load_lottie(path):
     with open(path, "r") as fh:
         return json.load(fh)
 
+
 def prioritize(places):
-    kws = {"bistro", "brasserie", "trattoria", "tavern",
-           "grill", "prix fixe", "pre fixe", "ristorante"}
+    kws = {
+        "bistro",
+        "brasserie",
+        "trattoria",
+        "tavern",
+        "grill",
+        "prix fixe",
+        "pre fixe",
+        "ristorante",
+    }
     return sorted(
         places,
         key=lambda p: -1 if any(k in p.get("name", "").lower() for k in kws) else 0,
     )
 
+
 def process_place(place, location):
     name, addr, web = place["name"], place["vicinity"], place["website"]
     rating, photo = place.get("rating"), place.get("photo_ref")
 
-    # skip if already cached
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -121,25 +147,21 @@ def process_place(place, location):
         pass
     return None
 
-def format_rating(rating: float | None) -> str:
-    if rating is None:
-        return ""
-    # Numeric display
-    return f"{rating:.1f} / 5"
-    # ── If you prefer stars (½‑star precision) swap in the block below ──
-    # filled   = "★" * floor(rating)
-    # halfStar = "½" if rating - floor(rating) >= 0.5 else ""
-    # empty    = "☆" * (5 - floor(rating) - (1 if halfStar else 0))
-    # return filled + halfStar + empty
+
+def format_rating(rating):
+    return f"{rating:.1f} / 5" if rating else ""
+
 
 def build_card(name, addr, web, lbl, rating, photo):
     photo_tag = (
         f'<img src="https://maps.googleapis.com/maps/api/place/photo'
         f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo else ""
+        if photo
+        else ""
     )
-    rating_display = format_rating(rating)
-    rating_html = f'<div class="rate">{rating_display}</div>' if rating_display else ""
+    rating_html = (
+        f'<div class="rate">{format_rating(rating)}</div>' if rating else ""
+    )
     return f"""
     <div class="card">
         {photo_tag}
@@ -153,12 +175,13 @@ def build_card(name, addr, web, lbl, rating, photo):
     </div>
     """
 
+
 def label_rank(lbl):
     lbl = lbl.lower()
     return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
 
 
-# ──────────────── Streamlit page setup ────────────────────────────────────────
+# ────────────────── Streamlit page setup ──────────────────────────────────────
 st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
 st.markdown(
     """
@@ -177,32 +200,28 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+ensure_schema()
 
-# ──────────────── session init ────────────────────────────────────────────────
-if "bootstrapped" not in st.session_state:
-    ensure_schema()
-    st.session_state["bootstrapped"] = True
-if "expanded" not in st.session_state:
-    st.session_state["expanded"] = False
-
-
-# ──────────────── header ──────────────────────────────────────────────────────
+# ────────────────── header ────────────────────────────────────────────────────
 st.title("The Fixe")
 
 if st.button("Reset Database"):
     init_db()
+    st.session_state["searched"] = False
     st.experimental_rerun()
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 
-# ──────────────── search routines ─────────────────────────────────────────────
-def run_search(limit: int | None):
+# ────────────────── search routines ───────────────────────────────────────────
+def run_search(limit):
     status = st.empty()
-    anim   = st.empty()
+    anim = st.empty()
 
-    status.markdown("### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
-                    unsafe_allow_html=True)
+    status.markdown(
+        "### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
+        unsafe_allow_html=True,
+    )
     cook = load_lottie("Animation - 1748132250829.json")
     if cook:
         with anim.container():
@@ -216,52 +235,52 @@ def run_search(limit: int | None):
 
         with ThreadPoolExecutor(max_workers=10) as ex:
             rows = list(ex.map(lambda p: process_place(p, location), candidates))
-
         rows = [r for r in rows if r]
         if rows:
             store_rows(rows)
     except Exception as e:
         st.error(f"Search failed: {e}")
 
-    status.markdown("### The Fixe is in. Scroll below to see the deals.",
-                    unsafe_allow_html=True)
+    status.markdown(
+        "### The Fixe is in. Scroll below to see the deals.",
+        unsafe_allow_html=True,
+    )
     done = load_lottie("Finished.json")
     if done:
         with anim.container():
             st_lottie(done, height=260, key=f"done-{time.time()}")
 
 
-# ──────────────── user actions ────────────────────────────────────────────────
+# ────────────────── user actions ──────────────────────────────────────────────
 if st.button("Search"):
+    st.session_state["searched"] = True
     st.session_state["expanded"] = False
     run_search(limit=25)
 
-records = fetch_records(location)
+# ────────────────── results display ───────────────────────────────────────────
+if st.session_state.get("searched"):
+    records = fetch_records(location)
+    if records:
+        grouped = {}
+        for rec in records:
+            grouped.setdefault(rec[3].lower(), []).append(rec)
 
+        for lbl in sorted(grouped, key=label_rank):
+            st.subheader(lbl.title())
+            cols = st.columns(3)
+            for i, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
+                with cols[i % 3]:
+                    st.markdown(
+                        build_card(name, addr, web, lbl, rating, photo),
+                        unsafe_allow_html=True,
+                    )
 
-# ──────────────── results display ─────────────────────────────────────────────
-if records:
-    grouped = {}
-    for rec in records:
-        grouped.setdefault(rec[3].lower(), []).append(rec)
-
-    for lbl in sorted(grouped, key=label_rank):
-        st.subheader(lbl.title())
-        cols = st.columns(3)
-        for i, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
-            with cols[i % 3]:
-                st.markdown(
-                    build_card(name, addr, web, lbl, rating, photo),
-                    unsafe_allow_html=True,
-                )
-else:
-    st.info("No prix fixe menus stored yet for this location.")
-
-
-# ──────────────── expand search option ────────────────────────────────────────
-if records and not st.session_state["expanded"]:
-    st.markdown("---")
-    if st.button("Expand Search"):
-        st.session_state["expanded"] = True
-        run_search(limit=None)          # unlimited second pass
-        st.experimental_rerun()
+        # ── expand search ─────────────────────────────────────────────────────
+        if not st.session_state["expanded"]:
+            st.markdown("---")
+            if st.button("Expand Search"):
+                st.session_state["expanded"] = True
+                run_search(limit=None)
+                st.experimental_rerun()
+    else:
+        st.info("No prix fixe menus stored yet for this location.")
