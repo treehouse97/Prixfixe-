@@ -1,70 +1,70 @@
+# places_api.py
 import requests
 from typing import List, Dict
 from settings import GOOGLE_API_KEY
 
-TEXT_URL   = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+
+TEXT_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
 
 def text_search_restaurants(location_name: str) -> List[Dict]:
-    query  = f"restaurants in {location_name}"
+    query = f"restaurants in {location_name}"
     params = {"query": query, "key": GOOGLE_API_KEY}
 
-    seen, results = set(), []
+    final_results, seen_place_ids = [], set()
 
     while True:
-        data = _get(TEXT_URL, params)
-        for r in data.get("results", []):
-            pid = r.get("place_id")
-            if not pid or pid in seen:
+        data = _get_json(TEXT_URL, params)
+        for result in data.get("results", []):
+            place_id = result.get("place_id")
+            if not place_id or place_id in seen_place_ids:
                 continue
-            seen.add(pid)
+            seen_place_ids.add(place_id)
 
-            details = _get(
-                DETAIL_URL,
-                {
-                    "place_id": pid,
-                    "fields": (
-                        "name,vicinity,website,rating,types,price_level,"
-                        "opening_hours,geometry,photos"
-                    ),
-                    "key": GOOGLE_API_KEY,
-                },
-            ).get("result", {})
-
-            if not details.get("website"):
+            details = _fetch_details(place_id)
+            website = details.get("website")
+            if not website:
                 continue
 
-            loc = details["geometry"]["location"]
+            photo_ref = None
             photos = details.get("photos", [])
-            results.append(
+            if photos:
+                photo_ref = photos[0].get("photo_reference")
+
+            final_results.append(
                 {
-                    "name": details["name"],
-                    "address": details.get("vicinity", ""),
-                    "website": details["website"],
-                    "rating": details.get("rating"),
-                    "types": details.get("types", []),
-                    "price_level": details.get("price_level"),
-                    "open_now": details.get("opening_hours", {}).get("open_now"),
-                    "lat": loc["lat"],
-                    "lng": loc["lng"],
-                    "photo_ref": photos[0]["photo_reference"] if photos else None,
+                    "name": details.get("name", ""),
+                    "vicinity": details.get("vicinity", ""),
+                    "website": website,
+                    "rating": details.get("rating", None),
+                    "photo_ref": photo_ref,
                 }
             )
 
-        nxt = data.get("next_page_token")
-        if not nxt:
+        next_page_token = data.get("next_page_token")
+        if not next_page_token:
             break
         import time
 
         time.sleep(2)
-        params = {"pagetoken": nxt, "key": GOOGLE_API_KEY}
+        params = {"pagetoken": next_page_token, "key": GOOGLE_API_KEY}
 
-    return results
+    return final_results
 
 
-def _get(url: str, params: Dict) -> Dict:
+def _fetch_details(place_id: str) -> Dict:
+    detail_params = {
+        "place_id": place_id,
+        "fields": "name,vicinity,website,rating,photos",
+        "key": GOOGLE_API_KEY,
+    }
+    return _get_json(DETAIL_URL, detail_params).get("result", {})
+
+
+def _get_json(url: str, params: Dict) -> Dict:
     try:
-        return requests.get(url, params=params, timeout=8).json()
+        resp = requests.get(url, params=params, timeout=10)
+        return resp.json()
     except Exception:
         return {}
