@@ -61,9 +61,14 @@ def fetch_website_text(url):
     except Exception as e:
         print(f"[ERROR] Failed to fetch {url}: {e}")
 
-    return all_text.strip()
+    final_text = all_text.strip()
+    print(f"[DEBUG] Text length from {url}: {len(final_text)}")
+    return final_text
+
 
 def detect_prix_fixe_detailed(text):
+    print(f"[DEBUG] Fetched text length: {len(text)}")
+
     patterns = {
         "prix fixe": r"prix[\s\-]*fixe",
         "pre fixe": r"pre[\s\-]*fixe",
