@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse
 import re
 import fitz  # PyMuPDF
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from analyzer import analyze_text
+from ai_analyze import analyze_text
 
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
@@ -72,7 +72,12 @@ def fetch_website_text(url):
 
     return all_text.strip()
 
+
 def detect_prix_fixe_detailed(text):
+    """
+    Uses analyzer to detect prix fixe–related patterns and confidence.
+    Returns: match_found (bool), label string, confidence score (float)
+    """
     result = analyze_text(text)
     if result["has_prix_fixe"]:
         return True, ", ".join(result["labels"]), result["confidence"]
