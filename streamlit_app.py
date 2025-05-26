@@ -6,7 +6,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from math import floor
+from math import floor      # (unused now, but kept in case you add stars again)
 
 import streamlit as st
 from streamlit_lottie import st_lottie
@@ -15,89 +15,75 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from places_api import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
+
 # ────────────────── per‑session database ──────────────────────────────────────
 if "db_file" not in st.session_state:
-    session_db = os.path.join(
+    st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
     )
-    st.session_state["db_file"] = session_db
-    st.session_state["searched"] = False          # nothing displayed yet
+    st.session_state["searched"]  = False
+    st.session_state["expanded"]  = False
 
-DB_FILE = st.session_state["db_file"]
-LABEL_ORDER = list(PATTERNS.keys())
+DB_FILE      = st.session_state["db_file"]
+LABEL_ORDER  = list(PATTERNS.keys())
 
 SCHEMA = """
-CREATE TABLE restaurants (
+CREATE TABLE IF NOT EXISTS restaurants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    address TEXT,
-    website TEXT,
+    name        TEXT,
+    address     TEXT,
+    website     TEXT,
     has_prix_fixe INTEGER,
-    label TEXT,
-    raw_text TEXT,
-    location TEXT,
-    rating REAL,
-    photo_ref TEXT,
+    label       TEXT,
+    raw_text    TEXT,
+    location    TEXT,
+    rating      REAL,
+    photo_ref   TEXT,
     UNIQUE(name, address, location)
 )
 """
 
 
 def init_db() -> None:
-    """(Re)create the per‑session database."""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
-    conn.commit()
-    conn.close()
+    """(Re)create the session‑private SQLite file."""
+    sqlite3.connect(DB_FILE).executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
 
 
 def ensure_schema() -> None:
-    """If the DB file just got created, build the table."""
+    """Create table if the file is new or missing columns."""
     if not os.path.exists(DB_FILE):
         init_db()
         return
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    cur = sqlite3.connect(DB_FILE).cursor()
     try:
-        c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
+        cur.execute("SELECT rating FROM restaurants LIMIT 1")
     except sqlite3.OperationalError:
-        conn.close()
         init_db()
-    else:
-        conn.close()
+    finally:
+        cur.connection.close()
 
 
 def store_rows(rows) -> None:
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.executemany(
+    sqlite3.connect(DB_FILE).executemany(
         """
         INSERT OR IGNORE INTO restaurants
-        (name, address, website, has_prix_fixe, label, raw_text,
-         location, rating, photo_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (name,address,website,has_prix_fixe,label,raw_text,
+         location,rating,photo_ref)
+        VALUES (?,?,?,?,?,?,?,?,?)
         """,
         rows,
     )
-    conn.commit()
-    conn.close()
 
 
 def fetch_records(location):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
+    return sqlite3.connect(DB_FILE).execute(
         """
-        SELECT name, address, website, label, rating, photo_ref
+        SELECT name,address,website,label,rating,photo_ref
         FROM restaurants
         WHERE has_prix_fixe = 1 AND location = ?
         """,
         (location,),
-    )
-    data = c.fetchall()
-    conn.close()
-    return data
+    ).fetchall()
 
 
 # ────────────────── helpers ───────────────────────────────────────────────────
@@ -108,14 +94,8 @@ def load_lottie(path):
 
 def prioritize(places):
     kws = {
-        "bistro",
-        "brasserie",
-        "trattoria",
-        "tavern",
-        "grill",
-        "prix fixe",
-        "pre fixe",
-        "ristorante",
+        "bistro", "brasserie", "trattoria", "tavern",
+        "grill", "prix fixe", "pre fixe", "ristorante"
     }
     return sorted(
         places,
@@ -124,19 +104,18 @@ def prioritize(places):
 
 
 def process_place(place, location):
-    name, addr, web = place["name"], place["vicinity"], place["website"]
-    rating, photo = place.get("rating"), place.get("photo_ref")
+    name, addr, web  = place["name"], place["vicinity"], place["website"]
+    rating, photo    = place.get("rating"), place.get("photo_ref")
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
+    cur = sqlite3.connect(DB_FILE).cursor()
+    cur.execute(
         "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",
         (name, addr, location),
     )
-    if c.fetchone():
-        conn.close()
+    if cur.fetchone():
+        cur.connection.close()
         return None
-    conn.close()
+    cur.connection.close()
 
     try:
         text = fetch_website_text(web)
@@ -153,23 +132,20 @@ def format_rating(rating):
 
 
 def build_card(name, addr, web, lbl, rating, photo):
-    photo_tag = (
-        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo
-        else ""
+    img = (
+        f'<img src="https://maps.googleapis.com/maps/api/place/photo?'
+        f'maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
+        if photo else ""
     )
-    rating_html = (
-        f'<div class="rate">{format_rating(rating)}</div>' if rating else ""
-    )
+    stars = f'<div class="rate">{format_rating(rating)}</div>' if rating else ""
     return f"""
     <div class="card">
-        {photo_tag}
+        {img}
         <div class="body">
             <span class="badge">{lbl}</span>
             <div class="title">{name}</div>
             <div class="addr">{addr}</div>
-            {rating_html}
+            {stars}
             <a href="{web}" target="_blank">Visit&nbsp;Site</a>
         </div>
     </div>
@@ -177,24 +153,25 @@ def build_card(name, addr, web, lbl, rating, photo):
 
 
 def label_rank(lbl):
-    lbl = lbl.lower()
-    return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
+    low = lbl.lower()
+    return LABEL_ORDER.index(low) if low in LABEL_ORDER else len(LABEL_ORDER)
 
 
 # ────────────────── Streamlit page setup ──────────────────────────────────────
 st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
+
 st.markdown(
     """
 <style>
 .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.15);
-      overflow:hidden;background:#fff;margin-bottom:24px}
+      background:#fff;margin-bottom:24px;overflow:hidden}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
 .title{font-size:1.05rem;font-weight:600;margin-bottom:4px;color:#111;}
 .addr{font-size:.9rem;color:#444;margin-bottom:6px}
-.rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
+.rate{font-size:.85rem;color:#f39c12;margin-bottom:6px}
+.badge{background:#e74c3c;color:#fff;border-radius:4px;padding:2px 6px;
+       font-size:.75rem;margin-bottom:8px;display:inline-block}
 </style>
 """,
     unsafe_allow_html=True,
@@ -208,15 +185,13 @@ st.title("The Fixe")
 if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
-    st.experimental_rerun()
+    st.rerun()                             # ← updated
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-
-# ────────────────── search routines ───────────────────────────────────────────
+# ────────────────── search routine ────────────────────────────────────────────
 def run_search(limit):
-    status = st.empty()
-    anim = st.empty()
+    status = st.empty(); anim = st.empty()
 
     status.markdown(
         "### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
@@ -228,13 +203,13 @@ def run_search(limit):
             st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
     try:
-        raw = text_search_restaurants(location)
-        candidates = prioritize([p for p in raw if p.get("website")])
+        raw  = text_search_restaurants(location)
+        cand = prioritize([p for p in raw if p.get("website")])
         if limit:
-            candidates = candidates[:limit]
+            cand = cand[:limit]
 
         with ThreadPoolExecutor(max_workers=10) as ex:
-            rows = list(ex.map(lambda p: process_place(p, location), candidates))
+            rows = list(ex.map(lambda p: process_place(p, location), cand))
         rows = [r for r in rows if r]
         if rows:
             store_rows(rows)
@@ -250,8 +225,7 @@ def run_search(limit):
         with anim.container():
             st_lottie(done, height=260, key=f"done-{time.time()}")
 
-
-# ────────────────── user actions ──────────────────────────────────────────────
+# ────────────────── primary search button ─────────────────────────────────────
 if st.button("Search"):
     st.session_state["searched"] = True
     st.session_state["expanded"] = False
@@ -281,6 +255,6 @@ if st.session_state.get("searched"):
             if st.button("Expand Search"):
                 st.session_state["expanded"] = True
                 run_search(limit=None)
-                st.experimental_rerun()
+                st.rerun()                 # ← updated
     else:
         st.info("No prix fixe menus stored yet for this location.")
