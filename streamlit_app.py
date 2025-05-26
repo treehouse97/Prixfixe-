@@ -12,52 +12,59 @@ from places_api import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
 DB_FILE = "prix_fixe.db"
-LABEL_ORDER = list(PATTERNS.keys())
+LABEL_ORDER = list(PATTERNS.keys())            # canonical order for grouping
 
-# ─── Streamlit Config ──────────────────────────────────────────────────────────
-st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
 
-# ─── Database ──────────────────────────────────────────────────────────────────
+# ────────────────── database helpers ──────────────────────────────────────────
+SCHEMA = """
+CREATE TABLE restaurants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    address TEXT,
+    website TEXT,
+    has_prix_fixe INTEGER,
+    label TEXT,
+    raw_text TEXT,
+    location TEXT,
+    rating REAL,
+    photo_ref TEXT,
+    UNIQUE(name, address, location)
+)
+"""
+
 def init_db() -> None:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS restaurants (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            address TEXT,
-            website TEXT,
-            has_prix_fixe INTEGER,
-            label TEXT,
-            raw_text TEXT,
-            location TEXT,
-            rating REAL,
-            photo_ref TEXT,
-            UNIQUE(name, address, location)
-        )
-        """
-    )
+    c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
     conn.commit()
     conn.close()
 
+def ensure_schema() -> None:
+    """Auto‑migrate old DBs that lack the rating/photo_ref columns."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
+    except sqlite3.OperationalError:          # old schema detected
+        conn.close()
+        init_db()                             # rebuild from scratch
+    else:
+        conn.close()
 
 def store_rows(rows) -> None:
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    for r in rows:
-        c.execute(
-            """
-            INSERT OR IGNORE INTO restaurants
-            (name, address, website, has_prix_fixe, label, raw_text,
-             location, rating, photo_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            r,
-        )
+    c.executemany(
+        """
+        INSERT OR IGNORE INTO restaurants
+        (name, address, website, has_prix_fixe, label, raw_text,
+         location, rating, photo_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
     conn.commit()
     conn.close()
-
 
 def fetch_records(location):
     conn = sqlite3.connect(DB_FILE)
@@ -75,33 +82,24 @@ def fetch_records(location):
     return data
 
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
+# ────────────────── misc utilities ────────────────────────────────────────────
 def load_lottie(path):
     with open(path, "r") as fh:
         return json.load(fh)
 
-
 def prioritize(places):
-    kws = [
-        "bistro",
-        "brasserie",
-        "trattoria",
-        "tavern",
-        "grill",
-        "prix fixe",
-        "pre fixe",
-        "ristorante",
-    ]
+    kws = {"bistro", "brasserie", "trattoria", "tavern",
+           "grill", "prix fixe", "pre fixe", "ristorante"}
     return sorted(
         places,
         key=lambda p: -1 if any(k in p.get("name", "").lower() for k in kws) else 0,
     )
 
-
 def process_place(place, location):
     name, addr, web = place["name"], place["vicinity"], place["website"]
     rating, photo = place.get("rating"), place.get("photo_ref")
 
+    # skip if already cached
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
@@ -115,25 +113,14 @@ def process_place(place, location):
 
     try:
         text = fetch_website_text(web)
-        matched, label = detect_prix_fixe_detailed(text)
+        matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
-            return (
-                name,
-                addr,
-                web,
-                1,
-                label,
-                text,
-                location,
-                rating,
-                photo,
-            )
+            return (name, addr, web, 1, lbl, text, location, rating, photo)
     except Exception:
         pass
     return None
 
-
-def build_card(name, addr, web, label, rating, photo):
+def build_card(name, addr, web, lbl, rating, photo):
     photo_tag = (
         f'<img src="https://maps.googleapis.com/maps/api/place/photo'
         f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
@@ -145,17 +132,22 @@ def build_card(name, addr, web, label, rating, photo):
     <div class="card">
         {photo_tag}
         <div class="body">
-            <span class="badge">{label}</span>
+            <span class="badge">{lbl}</span>
             <div class="title">{name}</div>
             <div class="addr">{addr}</div>
             {'<div class="rate">' + stars + '</div>' if stars else ''}
-            <a href="{web}" target="_blank">Visit Site</a>
+            <a href="{web}" target="_blank">Visit&nbsp;Site</a>
         </div>
     </div>
     """
 
+def label_rank(lbl):
+    lbl = lbl.lower()
+    return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
 
-# ─── CSS ───────────────────────────────────────────────────────────────────────
+
+# ────────────────── Streamlit page setup ──────────────────────────────────────
+st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
 st.markdown(
     """
 <style>
@@ -173,32 +165,34 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ─── Session Init ─────────────────────────────────────────────────────────────
-if "db_init" not in st.session_state:
-    init_db()
-    st.session_state["db_init"] = True
+# ────────────────── session initialisation ────────────────────────────────────
+if "bootstrapped" not in st.session_state:
+    ensure_schema()
+    st.session_state["bootstrapped"] = True
 if "expanded" not in st.session_state:
     st.session_state["expanded"] = False
 
-# ─── UI ────────────────────────────────────────────────────────────────────────
+# ────────────────── header ────────────────────────────────────────────────────
 st.title("The Fixe")
 
-if st.button("Reset Database"):
+if st.button("Reset Database"):
     init_db()
     st.experimental_rerun()
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-# ── Primary Search ────────────────────────────────────────────────────────────
-def run_search(limit=25):
-    msg = st.empty()
-    anim = st.empty()
 
-    msg.markdown("### Please wait for The Fixe...<br/>(be patient, we’re cooking)", unsafe_allow_html=True)
-    cooking = load_lottie("Animation - 1748132250829.json")
-    if cooking:
+# ────────────────── search routines ───────────────────────────────────────────
+def run_search(limit=25):
+    status = st.empty()
+    anim   = st.empty()
+
+    status.markdown("### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
+                    unsafe_allow_html=True)
+    cook = load_lottie("Animation - 1748132250829.json")
+    if cook:
         with anim.container():
-            st_lottie(cooking, height=280, key=str(time.time()))
+            st_lottie(cook, height=280, key=f"cook-{time.time()}")
 
     try:
         raw = text_search_restaurants(location)
@@ -209,50 +203,49 @@ def run_search(limit=25):
         with ThreadPoolExecutor(max_workers=10) as ex:
             rows = list(ex.map(lambda p: process_place(p, location), candidates))
 
-        rows_to_store = [r for r in rows if r]
-        if rows_to_store:
-            store_rows(rows_to_store)
+        rows = [r for r in rows if r]
+        if rows:
+            store_rows(rows)
     except Exception as e:
         st.error(f"Search failed: {e}")
 
-    finished = load_lottie("Finished.json")
-    msg.markdown("### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True)
-    if finished:
+    status.markdown("### The Fixe is in. Scroll below to see the deals.",
+                    unsafe_allow_html=True)
+    done = load_lottie("Finished.json")
+    if done:
         with anim.container():
-            st_lottie(finished, height=280, key=str(time.time()))
+            st_lottie(done, height=280, key=f"done-{time.time()}")
 
 
+# ────────────────── user actions ──────────────────────────────────────────────
 if st.button("Search"):
     st.session_state["expanded"] = False
     run_search(limit=25)
 
-# ── Results Display ───────────────────────────────────────────────────────────
 records = fetch_records(location)
 
+# ────────────────── results display ───────────────────────────────────────────
 if records:
     grouped = {}
-    for r in records:
-        grouped.setdefault(r[3].lower(), []).append(r)
+    for rec in records:
+        grouped.setdefault(rec[3].lower(), []).append(rec)
 
-    def label_rank(lbl):
-        lbl_lower = lbl.lower()
-        return LABEL_ORDER.index(lbl_lower) if lbl_lower in LABEL_ORDER else len(LABEL_ORDER)
-
-    sorted_labels = sorted(grouped.keys(), key=label_rank)
-
-    for lbl in sorted_labels:
+    for lbl in sorted(grouped, key=label_rank):
         st.subheader(lbl.title())
         cols = st.columns(3)
-        for idx, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
-            with cols[idx % 3]:
-                st.markdown(build_card(name, addr, web, lbl, rating, photo), unsafe_allow_html=True)
+        for i, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
+            with cols[i % 3]:
+                st.markdown(
+                    build_card(name, addr, web, lbl, rating, photo),
+                    unsafe_allow_html=True
+                )
 else:
-    st.info("No prix fixe menus stored yet for this location.")
+    st.info("No prix fixe menus stored yet for this location.")
 
-# ── Expand Search ─────────────────────────────────────────────────────────────
+# ────────────────── expand search option ──────────────────────────────────────
 if records and not st.session_state["expanded"]:
     st.markdown("---")
-    if st.button("Expand Search"):
+    if st.button("Expand Search"):
         st.session_state["expanded"] = True
-        run_search(limit=None)
+        run_search(limit=None)          # unlimited pass
         st.experimental_rerun()
