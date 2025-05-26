@@ -1,182 +1,286 @@
-import json, os, sqlite3, tempfile, time, uuid
+# streamlit_app.py
+import json
+import os
+import sqlite3
+import tempfile
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote
+from math import floor
 
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-# ── optional folium integration ──────────────────────────────────────────────
-try:
-    import folium
-    from streamlit_folium import st_folium
-    MAP_BACKEND = "folium"
-except ModuleNotFoundError:
-    MAP_BACKEND = "st_map"           # graceful fallback
-
-from scraper    import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
+from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from places_api import text_search_restaurants
-from settings   import GOOGLE_API_KEY
+from settings import GOOGLE_API_KEY
 
-# ─── per‑session SQLite -------------------------------------------------------
+# ────────────────── per‑session database ──────────────────────────────────────
 if "db_file" not in st.session_state:
-    st.session_state["db_file"]   = os.path.join(tempfile.gettempdir(), f"fixe_{uuid.uuid4().hex}.db")
-    st.session_state["searched"]  = False
-    st.session_state["favorites"] = set()
+    session_db = os.path.join(
+        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
+    )
+    st.session_state["db_file"] = session_db
+    st.session_state["searched"] = False          # nothing displayed yet
 
-DB_FILE     = st.session_state["db_file"]
+DB_FILE = st.session_state["db_file"]
 LABEL_ORDER = list(PATTERNS.keys())
-ACCENT      = "#e74c3c"
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS restaurants(
- id INTEGER PRIMARY KEY,
- name TEXT,address TEXT,website TEXT,
- label TEXT,raw_text TEXT,location TEXT,
- rating REAL,price_level INTEGER,open_now INTEGER,
- lat REAL,lng REAL,photo_ref TEXT,
- UNIQUE(name,address,location))
+CREATE TABLE restaurants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    address TEXT,
+    website TEXT,
+    has_prix_fixe INTEGER,
+    label TEXT,
+    raw_text TEXT,
+    location TEXT,
+    rating REAL,
+    photo_ref TEXT,
+    UNIQUE(name, address, location)
+)
 """
-def init_db(): sqlite3.connect(DB_FILE).executescript(SCHEMA)
-init_db()
 
-# ─── helpers ------------------------------------------------------------------
-def store_rows(rows):
-    sqlite3.connect(DB_FILE).executemany(
-        "INSERT OR IGNORE INTO restaurants VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?)",
+
+def init_db() -> None:
+    """(Re)create the per‑session database."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
+    conn.commit()
+    conn.close()
+
+
+def ensure_schema() -> None:
+    """If the DB file just got created, build the table."""
+    if not os.path.exists(DB_FILE):
+        init_db()
+        return
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        init_db()
+    else:
+        conn.close()
+
+
+def store_rows(rows) -> None:
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.executemany(
+        """
+        INSERT OR IGNORE INTO restaurants
+        (name, address, website, has_prix_fixe, label, raw_text,
+         location, rating, photo_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
         rows,
     )
-def fetch_rows(loc): return sqlite3.connect(DB_FILE).execute(
-        "SELECT * FROM restaurants WHERE location=?", (loc,)).fetchall()
+    conn.commit()
+    conn.close()
 
-def load_lottie(p): return json.load(open(p))
-def rating(r): return f"{r:.1f}/5" if r else ""
-def textfrag(url,label): return url + "#:~:text=" + quote(label)
 
-def build_card(r):
-    (_id,n,a,w,l,_t,_loc,rat,pr,open,lat,lng,photo)=r
-    photo_tag = f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else ""
-    heart = "❤️" if _id in st.session_state["favorites"] else "🤍"
-    return f"""
-<div class="card" onclick="fetch('/?fav={_id}')">
- {photo_tag}
- <div class="body">
-  <div class="row"><span>{heart}</span><span class="badge">{l}</span></div>
-  <div class="title">{n}</div>
-  <div class="sub">{a}</div>
-  <div class="meta">{rating(rat)} {"$"*pr if pr else ""} {"🟢" if open else ""}</div>
-  <a href="{textfrag(w,l)}" target="_blank">Visit Site</a>
- </div></div>""",(lat,lng,n,l)
-
-def label_rank(lbl): 
-    try:return LABEL_ORDER.index(lbl.lower())
-    except ValueError:return len(LABEL_ORDER)
-
-def prioritize(lst):
-    kws={"bistro","brasserie","trattoria","tavern","grill","prix fixe","pre fixe","ristorante"}
-    return sorted(lst,key=lambda p:-1 if any(k in p["name"].lower() for k in kws) else 0)
-
-# ─── UI & CSS -----------------------------------------------------------------
-st.set_page_config("The Fixe","🍽",layout="wide")
-base=st.get_option("theme.base")
-TEXT="#111" if base=="light" else "#eee"
-CARD_BG="#fff" if base=="light" else "#1e1e1e"
-st.markdown(f"""
-<style>
-.hero{{height:220px;background:#000;margin-bottom:1rem;position:relative;border-radius:12px;overflow:hidden}}
-.hero video{{width:100%;height:100%;object-fit:cover;opacity:.35}}
-.hero h1{{position:absolute;bottom:20px;left:40px;font-size:2.2rem;color:#fff}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:24px}}
-.card{{background:{CARD_BG};border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.12);cursor:pointer}}
-.card img{{width:100%;height:170px;object-fit:cover}}
-.body{{padding:12px 16px;color:{TEXT}}}
-.title{{font-size:1.05rem;font-weight:600;margin:2px 0}}
-.sub{{color:#666;font-size:.9rem}}
-.meta{{color:#888;font-size:.8rem}}
-.badge{{background:{ACCENT};color:#fff;border-radius:4px;padding:2px 6px;font-size:.7rem;margin-left:.4rem}}
-.row{{display:flex;gap:4px;align-items:center}}
-a{{color:{ACCENT};text-decoration:none;font-size:.9rem}}
-a:hover{{text-decoration:underline}}
-</style>
-""",unsafe_allow_html=True)
-
-st.markdown(
-    """<div class="hero"><video autoplay muted loop>
-         <source src="https://cdn.coverr.co/videos/coverr-chef-cooking-7234/1080p.mp4" type="video/mp4">
-       </video><h1>Find Prix‑Fixe &amp; Tasting Menus Near You</h1></div>""",
-    unsafe_allow_html=True)
-
-# ─── controls -----------------------------------------------------------------
-c1,c2,c3,c4=st.columns(4)
-location   = c1.text_input("📍 Location","Islip, NY")
-min_rating = c2.slider("⭐ Min Rating",0.0,5.0,0.0,0.5)
-open_only  = c3.checkbox("Open Now Only")
-price_sel  = c4.selectbox("💲 Price",["Any","$","$$","$$$","$$$$"])
-
-# ─── search -------------------------------------------------------------------
-def run_search():
-    st.info("Searching…")
-    data = text_search_restaurants(location)
-    rows=[]
-    for p in prioritize([x for x in data if x["website"]]):
-        if p["rating"] and p["rating"]<min_rating:continue
-        if open_only and p["open_now"] is False: continue
-        if price_sel!="Any" and p["price_level"]!=len(price_sel): continue
-        txt=fetch_website_text(p["website"])
-        ok,lbl=detect_prix_fixe_detailed(txt)
-        if ok:
-            rows.append((None,p["name"],p["address"],p["website"],lbl,txt,
-                         location,p["rating"],p["price_level"],
-                         int(p["open_now"]) if p["open_now"] is not None else None,
-                         p["lat"],p["lng"],p["photo_ref"]))
-    init_db(); store_rows(rows)
-    st.session_state["searched"]=True
-
-if st.button("Search"): run_search()
-
-# ─── results ------------------------------------------------------------------
-if st.session_state["searched"]:
-    recs=fetch_rows(location)
-    if not recs: st.warning("No menus match current filters.")
-    else:
-        # map
-        if MAP_BACKEND=="folium":
-            m=folium.Map(location=[recs[0][10],recs[0][11]],zoom_start=12)
-            for r in recs: folium.Marker([r[10],r[11]],tooltip=r[1]).add_to(m)
-            st_folium(m,height=280)
-        else:
-            st.map([{"lat":r[10],"lon":r[11]} for r in recs])
-
-        # cards
-        st.markdown('<div class="grid">',unsafe_allow_html=True)
-        grouped={}
-        for r in recs: grouped.setdefault(r[4].lower(),[]).append(r)
-        for lbl in sorted(grouped,key=label_rank):
-            st.markdown(f"<h3>{lbl.title()}</h3>",unsafe_allow_html=True)
-            for r in grouped[lbl]:
-                html,_=build_card(r)
-                st.markdown(html,unsafe_allow_html=True)
-        st.markdown('</div>',unsafe_allow_html=True)
-
-        # favorites sidebar
-        if st.session_state["favorites"]:
-            with st.sidebar:
-                st.subheader("Favorites")
-                for fid in st.session_state["favorites"]:
-                    row=next((r for r in recs if r[0]==fid),None)
-                    if row: st.markdown(f"• {row[1]}")
-
-# ─── handle ♥ clicks ----------------------------------------------------------
-import urllib.parse, os
-if (qs:=os.environ.get("QUERY_STRING")):
-    fav=urllib.parse.parse_qs(qs).get("fav",[None])[0]
-    if fav:
-        fid=int(fav); favs=st.session_state["favorites"]
-        favs.remove(fid) if fid in favs else favs.add(fid)
-        st.experimental_rerun()
-
-# ─── missing‑package hint -----------------------------------------------------
-if MAP_BACKEND=="st_map":
-    st.warning(
-        "Install **streamlit‑folium** for the interactive map:\n\n"
-        "`pip install streamlit-folium`", icon="💡"
+def fetch_records(location):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT name, address, website, label, rating, photo_ref
+        FROM restaurants
+        WHERE has_prix_fixe = 1 AND location = ?
+        """,
+        (location,),
     )
+    data = c.fetchall()
+    conn.close()
+    return data
+
+
+# ────────────────── helpers ───────────────────────────────────────────────────
+def load_lottie(path):
+    with open(path, "r") as fh:
+        return json.load(fh)
+
+
+def prioritize(places):
+    kws = {
+        "bistro",
+        "brasserie",
+        "trattoria",
+        "tavern",
+        "grill",
+        "prix fixe",
+        "pre fixe",
+        "ristorante",
+    }
+    return sorted(
+        places,
+        key=lambda p: -1 if any(k in p.get("name", "").lower() for k in kws) else 0,
+    )
+
+
+def process_place(place, location):
+    name, addr, web = place["name"], place["vicinity"], place["website"]
+    rating, photo = place.get("rating"), place.get("photo_ref")
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",
+        (name, addr, location),
+    )
+    if c.fetchone():
+        conn.close()
+        return None
+    conn.close()
+
+    try:
+        text = fetch_website_text(web)
+        matched, lbl = detect_prix_fixe_detailed(text)
+        if matched:
+            return (name, addr, web, 1, lbl, text, location, rating, photo)
+    except Exception:
+        pass
+    return None
+
+
+def format_rating(rating):
+    return f"{rating:.1f} / 5" if rating else ""
+
+
+def build_card(name, addr, web, lbl, rating, photo):
+    photo_tag = (
+        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
+        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
+        if photo
+        else ""
+    )
+    rating_html = (
+        f'<div class="rate">{format_rating(rating)}</div>' if rating else ""
+    )
+    return f"""
+    <div class="card">
+        {photo_tag}
+        <div class="body">
+            <span class="badge">{lbl}</span>
+            <div class="title">{name}</div>
+            <div class="addr">{addr}</div>
+            {rating_html}
+            <a href="{web}" target="_blank">Visit&nbsp;Site</a>
+        </div>
+    </div>
+    """
+
+
+def label_rank(lbl):
+    lbl = lbl.lower()
+    return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
+
+
+# ────────────────── Streamlit page setup ──────────────────────────────────────
+st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
+st.markdown(
+    """
+<style>
+.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.15);
+      overflow:hidden;background:#fff;margin-bottom:24px}
+.card img{width:100%;height:180px;object-fit:cover}
+.body{padding:12px 16px}
+.title{font-size:1.05rem;font-weight:600;margin-bottom:4px;color:#111;}
+.addr{font-size:.9rem;color:#444;margin-bottom:6px}
+.rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
+.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
+       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+ensure_schema()
+
+# ────────────────── header ────────────────────────────────────────────────────
+st.title("The Fixe")
+
+if st.button("Reset Database"):
+    init_db()
+    st.session_state["searched"] = False
+    st.experimental_rerun()
+
+location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
+
+
+# ────────────────── search routines ───────────────────────────────────────────
+def run_search(limit):
+    status = st.empty()
+    anim = st.empty()
+
+    status.markdown(
+        "### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
+        unsafe_allow_html=True,
+    )
+    cook = load_lottie("Animation - 1748132250829.json")
+    if cook:
+        with anim.container():
+            st_lottie(cook, height=260, key=f"cook-{time.time()}")
+
+    try:
+        raw = text_search_restaurants(location)
+        candidates = prioritize([p for p in raw if p.get("website")])
+        if limit:
+            candidates = candidates[:limit]
+
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            rows = list(ex.map(lambda p: process_place(p, location), candidates))
+        rows = [r for r in rows if r]
+        if rows:
+            store_rows(rows)
+    except Exception as e:
+        st.error(f"Search failed: {e}")
+
+    status.markdown(
+        "### The Fixe is in. Scroll below to see the deals.",
+        unsafe_allow_html=True,
+    )
+    done = load_lottie("Finished.json")
+    if done:
+        with anim.container():
+            st_lottie(done, height=260, key=f"done-{time.time()}")
+
+
+# ────────────────── user actions ──────────────────────────────────────────────
+if st.button("Search"):
+    st.session_state["searched"] = True
+    st.session_state["expanded"] = False
+    run_search(limit=25)
+
+# ────────────────── results display ───────────────────────────────────────────
+if st.session_state.get("searched"):
+    records = fetch_records(location)
+    if records:
+        grouped = {}
+        for rec in records:
+            grouped.setdefault(rec[3].lower(), []).append(rec)
+
+        for lbl in sorted(grouped, key=label_rank):
+            st.subheader(lbl.title())
+            cols = st.columns(3)
+            for i, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
+                with cols[i % 3]:
+                    st.markdown(
+                        build_card(name, addr, web, lbl, rating, photo),
+                        unsafe_allow_html=True,
+                    )
+
+        # ── expand search ─────────────────────────────────────────────────────
+        if not st.session_state["expanded"]:
+            st.markdown("---")
+            if st.button("Expand Search"):
+                st.session_state["expanded"] = True
+                run_search(limit=None)
+                st.experimental_rerun()
+    else:
+        st.info("No prix fixe menus stored yet for this location.")
