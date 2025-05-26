@@ -3,6 +3,7 @@ import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from math import floor
 
 import streamlit as st
 from streamlit_lottie import st_lottie
@@ -12,10 +13,10 @@ from places_api import text_search_restaurants
 from settings import GOOGLE_API_KEY
 
 DB_FILE = "prix_fixe.db"
-LABEL_ORDER = list(PATTERNS.keys())            # canonical order for grouping
+LABEL_ORDER = list(PATTERNS.keys())           # canonical label order
 
 
-# ────────────────── database helpers ──────────────────────────────────────────
+# ──────────────── database helpers ────────────────────────────────────────────
 SCHEMA = """
 CREATE TABLE restaurants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,14 +41,14 @@ def init_db() -> None:
     conn.close()
 
 def ensure_schema() -> None:
-    """Auto‑migrate old DBs that lack the rating/photo_ref columns."""
+    """Upgrade an old DB that lacks the rating/photo_ref columns."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
         c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:          # old schema detected
+    except sqlite3.OperationalError:
         conn.close()
-        init_db()                             # rebuild from scratch
+        init_db()
     else:
         conn.close()
 
@@ -82,7 +83,7 @@ def fetch_records(location):
     return data
 
 
-# ────────────────── misc utilities ────────────────────────────────────────────
+# ──────────────── utilities ───────────────────────────────────────────────────
 def load_lottie(path):
     with open(path, "r") as fh:
         return json.load(fh)
@@ -120,14 +121,25 @@ def process_place(place, location):
         pass
     return None
 
+def format_rating(rating: float | None) -> str:
+    if rating is None:
+        return ""
+    # Numeric display
+    return f"{rating:.1f} / 5"
+    # ── If you prefer stars (½‑star precision) swap in the block below ──
+    # filled   = "★" * floor(rating)
+    # halfStar = "½" if rating - floor(rating) >= 0.5 else ""
+    # empty    = "☆" * (5 - floor(rating) - (1 if halfStar else 0))
+    # return filled + halfStar + empty
+
 def build_card(name, addr, web, lbl, rating, photo):
     photo_tag = (
         f'<img src="https://maps.googleapis.com/maps/api/place/photo'
         f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo
-        else ""
+        if photo else ""
     )
-    stars = "⭐" * int(rating) if rating else ""
+    rating_display = format_rating(rating)
+    rating_html = f'<div class="rate">{rating_display}</div>' if rating_display else ""
     return f"""
     <div class="card">
         {photo_tag}
@@ -135,7 +147,7 @@ def build_card(name, addr, web, lbl, rating, photo):
             <span class="badge">{lbl}</span>
             <div class="title">{name}</div>
             <div class="addr">{addr}</div>
-            {'<div class="rate">' + stars + '</div>' if stars else ''}
+            {rating_html}
             <a href="{web}" target="_blank">Visit&nbsp;Site</a>
         </div>
     </div>
@@ -146,7 +158,7 @@ def label_rank(lbl):
     return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
 
 
-# ────────────────── Streamlit page setup ──────────────────────────────────────
+# ──────────────── Streamlit page setup ────────────────────────────────────────
 st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
 st.markdown(
     """
@@ -155,8 +167,8 @@ st.markdown(
       overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
-.title{font-size:1.05rem;font-weight:600;margin-bottom:4px}
-.addr{font-size:.9rem;color:#555;margin-bottom:6px}
+.title{font-size:1.05rem;font-weight:600;margin-bottom:4px;color:#111;}
+.addr{font-size:.9rem;color:#444;margin-bottom:6px}
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
        padding:2px 6px;font-size:.75rem;margin-bottom:6px}
@@ -165,14 +177,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ────────────────── session initialisation ────────────────────────────────────
+
+# ──────────────── session init ────────────────────────────────────────────────
 if "bootstrapped" not in st.session_state:
     ensure_schema()
     st.session_state["bootstrapped"] = True
 if "expanded" not in st.session_state:
     st.session_state["expanded"] = False
 
-# ────────────────── header ────────────────────────────────────────────────────
+
+# ──────────────── header ──────────────────────────────────────────────────────
 st.title("The Fixe")
 
 if st.button("Reset Database"):
@@ -182,8 +196,8 @@ if st.button("Reset Database"):
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 
-# ────────────────── search routines ───────────────────────────────────────────
-def run_search(limit=25):
+# ──────────────── search routines ─────────────────────────────────────────────
+def run_search(limit: int | None):
     status = st.empty()
     anim   = st.empty()
 
@@ -192,7 +206,7 @@ def run_search(limit=25):
     cook = load_lottie("Animation - 1748132250829.json")
     if cook:
         with anim.container():
-            st_lottie(cook, height=280, key=f"cook-{time.time()}")
+            st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
     try:
         raw = text_search_restaurants(location)
@@ -214,17 +228,18 @@ def run_search(limit=25):
     done = load_lottie("Finished.json")
     if done:
         with anim.container():
-            st_lottie(done, height=280, key=f"done-{time.time()}")
+            st_lottie(done, height=260, key=f"done-{time.time()}")
 
 
-# ────────────────── user actions ──────────────────────────────────────────────
+# ──────────────── user actions ────────────────────────────────────────────────
 if st.button("Search"):
     st.session_state["expanded"] = False
     run_search(limit=25)
 
 records = fetch_records(location)
 
-# ────────────────── results display ───────────────────────────────────────────
+
+# ──────────────── results display ─────────────────────────────────────────────
 if records:
     grouped = {}
     for rec in records:
@@ -237,15 +252,16 @@ if records:
             with cols[i % 3]:
                 st.markdown(
                     build_card(name, addr, web, lbl, rating, photo),
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 else:
     st.info("No prix fixe menus stored yet for this location.")
 
-# ────────────────── expand search option ──────────────────────────────────────
+
+# ──────────────── expand search option ────────────────────────────────────────
 if records and not st.session_state["expanded"]:
     st.markdown("---")
     if st.button("Expand Search"):
         st.session_state["expanded"] = True
-        run_search(limit=None)          # unlimited pass
+        run_search(limit=None)          # unlimited second pass
         st.experimental_rerun()
