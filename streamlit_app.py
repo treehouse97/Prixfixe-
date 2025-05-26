@@ -1,286 +1,227 @@
-# streamlit_app.py
-import json
-import os
-import sqlite3
-import tempfile
-import time
-import uuid
+import json, os, sqlite3, tempfile, time, uuid
 from concurrent.futures import ThreadPoolExecutor
-from math import floor
+from urllib.parse import quote
 
 import streamlit as st
 from streamlit_lottie import st_lottie
+from streamlit_folium import st_folium
+import folium
 
-from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
-from places_api import text_search_restaurants
-from settings import GOOGLE_API_KEY
+from scraper     import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
+from places_api  import text_search_restaurants
+from settings    import GOOGLE_API_KEY
 
-# ────────────────── per‑session database ──────────────────────────────────────
+# ── session‑unique DB so users never see others' data ─────────────────────────
 if "db_file" not in st.session_state:
-    session_db = os.path.join(
-        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
-    )
-    st.session_state["db_file"] = session_db
-    st.session_state["searched"] = False          # nothing displayed yet
+    st.session_state["db_file"]   = os.path.join(tempfile.gettempdir(), f"fixe_{uuid.uuid4().hex}.db")
+    st.session_state["searched"]  = False
+    st.session_state["favorites"] = set()
 
-DB_FILE = st.session_state["db_file"]
-LABEL_ORDER = list(PATTERNS.keys())
+DB_FILE      = st.session_state["db_file"]
+LABEL_ORDER  = list(PATTERNS.keys())
+ACCENT_BASE  = "#e74c3c"
 
+# ── SQLite helpers ────────────────────────────────────────────────────────────
 SCHEMA = """
-CREATE TABLE restaurants (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    address TEXT,
-    website TEXT,
-    has_prix_fixe INTEGER,
-    label TEXT,
-    raw_text TEXT,
-    location TEXT,
-    rating REAL,
-    photo_ref TEXT,
-    UNIQUE(name, address, location)
-)
+CREATE TABLE restaurants(
+ id INTEGER PRIMARY KEY,
+ name TEXT,address TEXT,website TEXT,
+ label TEXT,raw_text TEXT,location TEXT,
+ rating REAL,price_level INTEGER,open_now INTEGER,
+ lat REAL,lng REAL,photo_ref TEXT,
+ UNIQUE(name,address,location))
 """
+def init_db():
+    sqlite3.connect(DB_FILE).executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
 
-
-def init_db() -> None:
-    """(Re)create the per‑session database."""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
-    conn.commit()
-    conn.close()
-
-
-def ensure_schema() -> None:
-    """If the DB file just got created, build the table."""
-    if not os.path.exists(DB_FILE):
-        init_db()
-        return
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    try:
-        c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.close()
-        init_db()
-    else:
-        conn.close()
-
-
-def store_rows(rows) -> None:
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.executemany(
-        """
-        INSERT OR IGNORE INTO restaurants
-        (name, address, website, has_prix_fixe, label, raw_text,
-         location, rating, photo_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
-    conn.commit()
-    conn.close()
-
-
-def fetch_records(location):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT name, address, website, label, rating, photo_ref
-        FROM restaurants
-        WHERE has_prix_fixe = 1 AND location = ?
-        """,
-        (location,),
-    )
-    data = c.fetchall()
-    conn.close()
-    return data
-
-
-# ────────────────── helpers ───────────────────────────────────────────────────
-def load_lottie(path):
-    with open(path, "r") as fh:
-        return json.load(fh)
-
-
-def prioritize(places):
-    kws = {
-        "bistro",
-        "brasserie",
-        "trattoria",
-        "tavern",
-        "grill",
-        "prix fixe",
-        "pre fixe",
-        "ristorante",
-    }
-    return sorted(
-        places,
-        key=lambda p: -1 if any(k in p.get("name", "").lower() for k in kws) else 0,
+def store_rows(rows):
+    sqlite3.connect(DB_FILE).executemany(
+        "INSERT OR IGNORE INTO restaurants VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?)", rows
     )
 
+def fetch_rows(loc):
+    cur = sqlite3.connect(DB_FILE).cursor()
+    cur.execute("SELECT * FROM restaurants WHERE location=?", (loc,))
+    return cur.fetchall()
 
-def process_place(place, location):
-    name, addr, web = place["name"], place["vicinity"], place["website"]
-    rating, photo = place.get("rating"), place.get("photo_ref")
+# ensure DB
+if not os.path.exists(DB_FILE):
+    init_db()
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
-        "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",
-        (name, addr, location),
-    )
-    if c.fetchone():
-        conn.close()
-        return None
-    conn.close()
+# ── little helpers ────────────────────────────────────────────────────────────
+def load_lottie(path:str):
+    with open(path) as f:
+        return json.load(f)
 
-    try:
-        text = fetch_website_text(web)
-        matched, lbl = detect_prix_fixe_detailed(text)
-        if matched:
-            return (name, addr, web, 1, lbl, text, location, rating, photo)
-    except Exception:
-        pass
-    return None
+def highlight_link(url:str,label:str):
+    frag = url + "#:~:text=" + quote(label)
+    return frag
 
+def rating_str(r):
+    return f"{r:.1f}/5" if r else ""
 
-def format_rating(rating):
-    return f"{rating:.1f} / 5" if rating else ""
+def build_card(row):
+    (
+        _id, name, addr, web, lbl, _txt, loc, rating, price, open_now,
+        lat, lng, photo
+    ) = row
+    stars   = rating_str(rating)
+    dollar  = "$"*price if price else ""
+    open_txt= "🟢 Open" if open_now else "🔴 Closed" if open_now is not None else ""
+    fav_on  = "❤️" if _id in st.session_state["favorites"] else "🤍"
 
+    photo_tag = (f'<img loading="lazy" src="https://maps.googleapis.com/maps/api/place/photo?'
+                 f'maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else "")
 
-def build_card(name, addr, web, lbl, rating, photo):
-    photo_tag = (
-        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo
-        else ""
-    )
-    rating_html = (
-        f'<div class="rate">{format_rating(rating)}</div>' if rating else ""
+    button_html = (
+        f'<button onclick="fetch(\'/?fav={_id}\')" '
+        f'style="background:none;border:none;font-size:1.2rem;cursor:pointer">{fav_on}</button>'
     )
     return f"""
     <div class="card">
-        {photo_tag}
-        <div class="body">
-            <span class="badge">{lbl}</span>
-            <div class="title">{name}</div>
-            <div class="addr">{addr}</div>
-            {rating_html}
-            <a href="{web}" target="_blank">Visit&nbsp;Site</a>
-        </div>
-    </div>
-    """
+      {photo_tag}
+      <div class="body">
+        <div class="row">{button_html}<span class="badge">{lbl}</span></div>
+        <div class="title">{name}</div>
+        <div class="sub">{addr}</div>
+        <div class="meta">{stars} {dollar} {open_txt}</div>
+        <a href="{highlight_link(web,lbl)}" target="_blank">Visit Site</a>
+      </div>
+    </div>""", (lat,lng,name,lbl)
 
-
-def label_rank(lbl):
-    lbl = lbl.lower()
+def label_rank(lbl): 
     return LABEL_ORDER.index(lbl) if lbl in LABEL_ORDER else len(LABEL_ORDER)
 
-
-# ────────────────── Streamlit page setup ──────────────────────────────────────
-st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
+# ── page config & CSS ─────────────────────────────────────────────────────────
+st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown(
-    """
+f"""
 <style>
-.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.15);
-      overflow:hidden;background:#fff;margin-bottom:24px}
-.card img{width:100%;height:180px;object-fit:cover}
-.body{padding:12px 16px}
-.title{font-size:1.05rem;font-weight:600;margin-bottom:4px;color:#111;}
-.addr{font-size:.9rem;color:#444;margin-bottom:6px}
-.rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
+html,body{{scroll-behavior:smooth}}
+/* hero */
+.hero{{position:relative;height:220px;background:#000;border-radius:12px;overflow:hidden;margin-bottom:1.25rem}}
+.hero video{{position:absolute;top:0;left:0;width:100%;min-height:100%;object-fit:cover;opacity:.35}}
+.hero h1{{position:relative;padding:80px 40px;color:#fff;font-size:2.2rem}}
+/* cards */
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:24px}}
+.card{{background:#fff;border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.12);display:flex;flex-direction:column}}
+.card img{{width:100%;height:170px;object-fit:cover}}
+.body{{padding:12px 16px;display:flex;flex-direction:column;gap:4px;font-size:.9rem}}
+.title{{font-size:1.05rem;font-weight:600;color:#111;margin:2px 0}}
+.sub{{color:#555}}
+.meta{{font-size:.8rem;color:#777}}
+.badge{{background:{ACCENT_BASE};color:#fff;padding:2px 6px;border-radius:4px;font-size:.7rem;margin-left:.4rem}}
+.row{{display:flex;align-items:center;gap:4px}}
+a{{text-decoration:none;color:{ACCENT_BASE};font-weight:600;font-size:.9rem}}
+a:hover{{text-decoration:underline}}
+button:focus{{outline:none}}
 </style>
 """,
-    unsafe_allow_html=True,
-)
+unsafe_allow_html=True)
 
-ensure_schema()
-
-# ────────────────── header ────────────────────────────────────────────────────
-st.title("The Fixe")
-
-if st.button("Reset Database"):
-    init_db()
-    st.session_state["searched"] = False
-    st.experimental_rerun()
-
-location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
-
-
-# ────────────────── search routines ───────────────────────────────────────────
-def run_search(limit):
-    status = st.empty()
-    anim = st.empty()
-
-    status.markdown(
-        "### Please wait for The Fixe...<br/>(be patient, we’re cooking)",
+# ── hero banner ───────────────────────────────────────────────────────────────
+with st.container():
+    st.markdown(
+        """<div class="hero">
+              <video autoplay muted loop>
+                <source src="https://cdn.coverr.co/videos/coverr-chef-cooking-7234/1080p.mp4" type="video/mp4">
+              </video><h1>Find Prix‑Fixe &amp; Tasting Menus Near You</h1></div>""",
         unsafe_allow_html=True,
     )
-    cook = load_lottie("Animation - 1748132250829.json")
-    if cook:
-        with anim.container():
-            st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
-    try:
-        raw = text_search_restaurants(location)
-        candidates = prioritize([p for p in raw if p.get("website")])
-        if limit:
-            candidates = candidates[:limit]
+# ── search controls ───────────────────────────────────────────────────────────
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    location = st.text_input("📍 Location", "Islip, NY")
+with col2:
+    min_rating = st.slider("⭐ Min Rating", 0.0, 5.0, 0.0, 0.5)
+with col3:
+    open_now = st.checkbox("Open Now Only")
+with col4:
+    price_level = st.selectbox("💲 Price", ["Any", "$", "$$", "$$$", "$$$$"])
 
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            rows = list(ex.map(lambda p: process_place(p, location), candidates))
-        rows = [r for r in rows if r]
-        if rows:
-            store_rows(rows)
-    except Exception as e:
-        st.error(f"Search failed: {e}")
+# ── search action ─────────────────────────────────────────────────────────────
+def run_search(expand=False):
+    ph = st.empty(); ph.info("Fetching places...")
+    raw = text_search_restaurants(location)
+    rows, map_pts = [], []
 
-    status.markdown(
-        "### The Fixe is in. Scroll below to see the deals.",
-        unsafe_allow_html=True,
-    )
-    done = load_lottie("Finished.json")
-    if done:
-        with anim.container():
-            st_lottie(done, height=260, key=f"done-{time.time()}")
+    for p in raw:
+        # filters
+        if p["rating"] and p["rating"] < min_rating:          continue
+        if open_now and p["open_now"] is False:               continue
+        if price_level!="Any" and p["price_level"]!=len(price_level): continue
 
+        text = fetch_website_text(p["website"])
+        matched, lbl = detect_prix_fixe_detailed(text)
+        if not matched: continue
 
-# ────────────────── user actions ──────────────────────────────────────────────
-if st.button("Search"):
+        rows.append(
+            (
+                None,
+                p["name"],
+                p["address"],
+                p["website"],
+                lbl,
+                text,
+                location,
+                p["rating"],
+                p["price_level"],
+                int(p["open_now"]) if p["open_now"] is not None else None,
+                p["lat"],
+                p["lng"],
+                p["photo_ref"],
+            )
+        )
+    store_rows(rows)
     st.session_state["searched"] = True
-    st.session_state["expanded"] = False
-    run_search(limit=25)
+    ph.empty()
 
-# ────────────────── results display ───────────────────────────────────────────
-if st.session_state.get("searched"):
-    records = fetch_records(location)
-    if records:
-        grouped = {}
-        for rec in records:
-            grouped.setdefault(rec[3].lower(), []).append(rec)
+if st.button("Search"):
+    init_db()
+    run_search()
 
-        for lbl in sorted(grouped, key=label_rank):
-            st.subheader(lbl.title())
-            cols = st.columns(3)
-            for i, (name, addr, web, _, rating, photo) in enumerate(grouped[lbl]):
-                with cols[i % 3]:
-                    st.markdown(
-                        build_card(name, addr, web, lbl, rating, photo),
-                        unsafe_allow_html=True,
-                    )
-
-        # ── expand search ─────────────────────────────────────────────────────
-        if not st.session_state["expanded"]:
-            st.markdown("---")
-            if st.button("Expand Search"):
-                st.session_state["expanded"] = True
-                run_search(limit=None)
-                st.experimental_rerun()
+# ── results (cards + map) ─────────────────────────────────────────────────────
+if st.session_state["searched"]:
+    cards = fetch_rows(location)
+    if not cards:
+        st.warning("No prix‑fixe menus found with current filters.")
     else:
-        st.info("No prix fixe menus stored yet for this location.")
+        # group & sort
+        groups = {}
+        for r in cards: groups.setdefault(r[4].lower(), []).append(r)
+        groups = dict(sorted(groups.items(), key=lambda x: label_rank(x[0])))
+
+        # map
+        m = folium.Map(location=[cards[0][10], cards[0][11]], zoom_start=12)
+        for _,_,_,_,lbl,_,_,_,_,_,lat,lng,_ in cards:
+            folium.Marker([lat,lng], tooltip=lbl).add_to(m)
+        st_folium(m, height=280)
+
+        # cards
+        st.markdown('<div class="grid">', unsafe_allow_html=True)
+        for lbl, items in groups.items():
+            st.markdown(f'<h3>{lbl.title()}</h3>', unsafe_allow_html=True)
+            for r in items:
+                html,_ = build_card(r)
+                st.markdown(html, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # favorites sidebar
+        if st.session_state["favorites"]:
+            with st.sidebar:
+                st.subheader("Favorites")
+                for fid in st.session_state["favorites"]:
+                    row = next((r for r in cards if r[0]==fid), None)
+                    if row: st.markdown(f"• {row[1]}")
+
+# ── handle '♥' clicks (cheap RPC) ─────────────────────────────────────────────
+import urllib.parse, os
+if "QUERY_STRING" in os.environ:
+    qs = urllib.parse.parse_qs(os.environ["QUERY_STRING"])
+    fav = qs.get("fav", [None])[0]
+    if fav:
+        fid = int(fav)
+        favs = st.session_state["favorites"]
+        favs.remove(fid) if fid in favs else favs.add(fid)
+        st.experimental_rerun()
