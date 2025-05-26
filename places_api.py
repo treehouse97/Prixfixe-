@@ -1,63 +1,70 @@
+# places_api.py
 import requests
-import streamlit as st
+from typing import List, Dict
 from settings import GOOGLE_API_KEY
 
-def text_search_restaurants(location_name):
-    base_url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    detail_url = "https://maps.googleapis.com/maps/api/place/details/json"
+
+TEXT_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+
+def text_search_restaurants(location_name: str) -> List[Dict]:
     query = f"restaurants in {location_name}"
+    params = {"query": query, "key": GOOGLE_API_KEY}
 
-    params = {
-        "query": query,
-        "key": GOOGLE_API_KEY
-    }
-
-    final_results = []
-    seen_place_ids = set()
+    final_results, seen_place_ids = [], set()
 
     while True:
-        response = requests.get(base_url, params=params)
-        try:
-            data = response.json()
-        except Exception as e:
-            st.error(f"Failed to parse Text Search response: {e}")
-            break
-
+        data = _get_json(TEXT_URL, params)
         for result in data.get("results", []):
             place_id = result.get("place_id")
             if not place_id or place_id in seen_place_ids:
                 continue
             seen_place_ids.add(place_id)
 
-            details_params = {
-                "place_id": place_id,
-                "fields": "name,vicinity,website",
-                "key": GOOGLE_API_KEY
-            }
-
-            try:
-                detail_response = requests.get(detail_url, params=details_params)
-                details = detail_response.json().get("result", {})
-            except Exception as e:
-                st.warning(f"Failed to fetch details for place_id={place_id}: {e}")
+            details = _fetch_details(place_id)
+            website = details.get("website")
+            if not website:
                 continue
 
-            website = details.get("website", "")
-            if website:
-                final_results.append({
+            photo_ref = None
+            photos = details.get("photos", [])
+            if photos:
+                photo_ref = photos[0].get("photo_reference")
+
+            final_results.append(
+                {
                     "name": details.get("name", ""),
                     "vicinity": details.get("vicinity", ""),
-                    "website": website
-                })
-            else:
-                st.warning(f"[TextSearch] No website for: {details.get('name', 'Unknown')} ({details.get('vicinity', '')})")
+                    "website": website,
+                    "rating": details.get("rating", None),
+                    "photo_ref": photo_ref,
+                }
+            )
 
-        # handle pagination
         next_page_token = data.get("next_page_token")
         if not next_page_token:
             break
         import time
-        time.sleep(2)  # wait before using next page token
-        params["pagetoken"] = next_page_token
+
+        time.sleep(2)
+        params = {"pagetoken": next_page_token, "key": GOOGLE_API_KEY}
 
     return final_results
+
+
+def _fetch_details(place_id: str) -> Dict:
+    detail_params = {
+        "place_id": place_id,
+        "fields": "name,vicinity,website,rating,photos",
+        "key": GOOGLE_API_KEY,
+    }
+    return _get_json(DETAIL_URL, detail_params).get("result", {})
+
+
+def _get_json(url: str, params: Dict) -> Dict:
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        return resp.json()
+    except Exception:
+        return {}
