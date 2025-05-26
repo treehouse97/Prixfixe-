@@ -1,6 +1,7 @@
-# streamlit_app.py  ── only rerun calls updated
+# streamlit_app.py
 import json, os, sqlite3, tempfile, time, uuid
 from concurrent.futures import ThreadPoolExecutor
+
 import streamlit as st
 from streamlit_lottie import st_lottie
 
@@ -8,15 +9,15 @@ from scraper     import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from places_api  import text_search_restaurants
 from settings    import GOOGLE_API_KEY
 
-# ── per‑session SQLite ────────────────────────────────────────────────────────
+# ── per‑session DB ────────────────────────────────────────────────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"]   = os.path.join(tempfile.gettempdir(),
                                   f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"]  = False
     st.session_state["expanded"]  = False
 
-DB_FILE      = st.session_state["db_file"]
-LABEL_ORDER  = list(PATTERNS.keys())
+DB_FILE     = st.session_state["db_file"]
+LABEL_ORDER = list(PATTERNS.keys())
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS restaurants(
@@ -26,11 +27,12 @@ CREATE TABLE IF NOT EXISTS restaurants(
  location TEXT,rating REAL,photo_ref TEXT,
  UNIQUE(name,address,location))
 """
+def init_db(): sqlite3.connect(DB_FILE).executescript(
+        "DROP TABLE IF EXISTS restaurants;" + SCHEMA)
 
-def init_db(): sqlite3.connect(DB_FILE).executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
 def ensure_schema():
     if not os.path.exists(DB_FILE): init_db(); return
-    cur = sqlite3.connect(DB_FILE).cursor()
+    cur=sqlite3.connect(DB_FILE).cursor()
     try: cur.execute("SELECT rating FROM restaurants LIMIT 1")
     except sqlite3.OperationalError: init_db()
     finally: cur.connection.close()
@@ -56,33 +58,32 @@ def prioritize(lst):
     return sorted(lst,key=lambda p:-1 if any(k in p.get("name","").lower() for k in kws) else 0)
 
 def process_place(p,loc):
-    name, addr, web = p["name"], p["vicinity"], p["website"]
-    rating, photo   = p.get("rating"), p.get("photo_ref")
+    n,a,w = p["name"],p["vicinity"],p["website"]
+    rating,photo = p.get("rating"),p.get("photo_ref")
     if sqlite3.connect(DB_FILE).execute(
-        "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",
-        (name,addr,loc)).fetchone():
-        return None
+        "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",(n,a,loc)
+    ).fetchone(): return None
     try:
-        text = fetch_website_text(web)
-        ok,lbl = detect_prix_fixe_detailed(text)
-        if ok:
-            return (name,addr,web,1,lbl,text,loc,rating,photo)
+        text=fetch_website_text(w)
+        ok,lbl=detect_prix_fixe_detailed(text)
+        if ok: return (n,a,w,1,lbl,text,loc,rating,photo)
     except Exception: pass
     return None
 
-def card(name,addr,web,lbl,rating,photo):
-    img = (f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-           f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else "")
-    rate= f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
-    return f"""
-<div class="card">{img}<div class="body"><span class="badge">{lbl}</span>
-<div class="title">{name}</div><div class="addr">{addr}</div>{rate}
-<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>"""
+def card(n,a,w,lbl,rating,photo):
+    img=(f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400'
+         f'&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else "")
+    stars=f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
+    return f"""<div class="card">{img}<div class="body">
+<span class="badge">{lbl}</span><div class="title">{n}</div>
+<div class="addr">{a}</div>{stars}<a href="{w}" target="_blank">Visit&nbsp;Site</a>
+</div></div>"""
 
 def rank(lbl):
-    low=lbl.lower(); return LABEL_ORDER.index(low) if low in LABEL_ORDER else len(LABEL_ORDER)
+    low=lbl.lower()
+    return LABEL_ORDER.index(low) if low in LABEL_ORDER else len(LABEL_ORDER)
 
-# ── UI / CSS ------------------------------------------------------------------
+# ── styling -------------------------------------------------------------------
 st.set_page_config("The Fixe","🍽",layout="wide")
 st.markdown("""
 <style>
@@ -99,22 +100,22 @@ st.markdown("""
 
 ensure_schema()
 
-# ── header --------------------------------------------------------------------
+# ── header & input ------------------------------------------------------------
 st.title("The Fixe")
 if st.button("Reset Database"):
-    init_db()
-    st.session_state["searched"]=False
-    st.rerun()                     # ← fixed
+    init_db(); st.session_state["searched"]=False; st.rerun()
 
 location = st.text_input("Enter a town, hamlet, or neighborhood","Islip, NY")
 
-# ── search --------------------------------------------------------------------
+# ── search logic --------------------------------------------------------------
 def run_search(limit):
     ph=st.empty(); anim=st.empty()
     ph.markdown("### Please wait for The Fixe…<br/>(be patient, we’re cooking)",
                 unsafe_allow_html=True)
-    lottie=load_lottie("Animation - 1748132250829.json"); 
-    if lottie: anim.lottie(lottie,height=260)
+    lottie=load_lottie("Animation - 1748132250829.json")
+    if lottie:
+        with anim.container(): st_lottie(lottie,height=260)   # ← fixed line
+
     data=text_search_restaurants(location)
     cand=prioritize([p for p in data if p.get("website")])
     if limit: cand=cand[:limit]
@@ -123,27 +124,28 @@ def run_search(limit):
     store_rows([r for r in rows if r])
     ph.markdown("### The Fixe is in. Scroll below to see the deals.",unsafe_allow_html=True)
 
+# ── primary search button -----------------------------------------------------
 if st.button("Search"):
     st.session_state.update(searched=True,expanded=False)
     run_search(limit=25)
 
-# ── results -------------------------------------------------------------------
+# ── results display -----------------------------------------------------------
 if st.session_state.get("searched"):
     recs=fetch_records(location)
     if not recs:
         st.info("No prix fixe menus stored yet for this location.")
     else:
-        grp={}
-        for r in recs: grp.setdefault(r[3].lower(),[]).append(r)
-        for lbl in sorted(grp,key=rank):
+        grouped={}
+        for r in recs: grouped.setdefault(r[3].lower(),[]).append(r)
+        for lbl in sorted(grouped,key=rank):
             st.subheader(lbl.title())
             cols=st.columns(3)
-            for i,(n,a,w,_l,r,p) in enumerate(grp[lbl]):
-                with cols[i%3]: st.markdown(card(n,a,w,lbl,r,p),unsafe_allow_html=True)
+            for i,(n,a,w,_lbl,r,ph) in enumerate(grouped[lbl]):
+                with cols[i%3]: st.markdown(card(n,a,w,lbl,r,ph),unsafe_allow_html=True)
 
         if not st.session_state["expanded"]:
             st.markdown("---")
             if st.button("Expand Search"):
                 st.session_state["expanded"]=True
                 run_search(limit=None)
-                st.rerun()        # ← fixed
+                st.rerun()
