@@ -1,4 +1,3 @@
-# streamlit_app.py
 import json
 import os
 import sqlite3
@@ -6,7 +5,6 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from math import floor
 
 import streamlit as st
 from streamlit_lottie import st_lottie
@@ -18,11 +16,17 @@ from settings import GOOGLE_API_KEY
 
 # ────────────────── compatibility helper ──────────────────────────────────────
 def safe_rerun() -> None:
-    """
-    Call st.rerun() on modern versions (≥ 1.27) or fall back to the
-    old experimental name on very old installs.
-    """
+    """Call st.rerun() on ≥ 1.27 or fall back to st.experimental_rerun()."""
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+
+
+# ────────────────── unicode‑safety helper ─────────────────────────────────────
+def clean_for_sqlite(s: str) -> str:
+    """
+    Strip lone surrogate code‑points so SQLite can UTF‑8‑encode the string.
+    Using 'ignore' keeps everything else unchanged.
+    """
+    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
 # ────────────────── per‑session database ──────────────────────────────────────
@@ -54,7 +58,6 @@ CREATE TABLE restaurants (
 
 
 def init_db() -> None:
-    """(Re)create the per‑session database."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
@@ -63,14 +66,13 @@ def init_db() -> None:
 
 
 def ensure_schema() -> None:
-    """If the DB file just got created, build the table."""
     if not os.path.exists(DB_FILE):
         init_db()
         return
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
-        c.execute("SELECT rating, photo_ref FROM restaurants LIMIT 1")
+        c.execute("SELECT rating FROM restaurants LIMIT 1")
     except sqlite3.OperationalError:
         conn.close()
         init_db()
@@ -150,6 +152,7 @@ def process_place(place, location):
 
     try:
         text = fetch_website_text(web)
+        text = clean_for_sqlite(text)            # ← sanitize before DB insert
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
             return (name, addr, web, 1, lbl, text, location, rating, photo)
@@ -218,7 +221,7 @@ st.title("The Fixe")
 if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
-    safe_rerun()                       # ← updated
+    safe_rerun()
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
@@ -291,6 +294,6 @@ if st.session_state.get("searched"):
             if st.button("Expand Search"):
                 st.session_state["expanded"] = True
                 run_search(limit=None)
-                safe_rerun()           # ← updated
+                safe_rerun()
     else:
         st.info("No prix fixe menus stored yet for this location.")
