@@ -95,12 +95,10 @@ def process_place(place, location):
 
     try:
         text = fetch_website_text(website)
-        print(f"[DEBUG] Fetched text length: {len(text)}")  # Debug line
         matched, label = detect_prix_fixe_detailed(text)
         if matched:
             return (name, address, website, 1, label, text, location)
-    except Exception as e:
-        print(f"[ERROR] Failed to process {website}: {e}")
+    except:
         return None
 
     return None
@@ -237,4 +235,5 @@ if results and not st.session_state["search_expanded"]:
 
         finished_animation = load_lottie_local("Finished.json")
         if finished_animation:
-            st_lottie(finished_animation, height=300, key="finished_expand")
+            with exp_animation.container():
+                st_lottie(finished_animation, height=300, key="finished_expand")
