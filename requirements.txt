@@ -5,3 +5,4 @@ streamlit
 PyMuPDF
 streamlit-lottie
 streamlit-js-eval
+PyPDF2
