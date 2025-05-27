@@ -22,10 +22,7 @@ def safe_rerun() -> None:
 
 # ────────────────── unicode‑safety helper ─────────────────────────────────────
 def clean_for_sqlite(s: str) -> str:
-    """
-    Strip lone surrogate code‑points so SQLite can UTF‑8‑encode the string.
-    Using 'ignore' keeps everything else unchanged.
-    """
+    """Strip lone surrogate code‑points so SQLite can UTF‑8‑encode the string."""
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
@@ -35,7 +32,7 @@ if "db_file" not in st.session_state:
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
     )
     st.session_state["db_file"] = session_db
-    st.session_state["searched"] = False          # nothing displayed yet
+    st.session_state["searched"] = False
 
 DB_FILE = st.session_state["db_file"]
 LABEL_ORDER = list(PATTERNS.keys())
@@ -152,7 +149,7 @@ def process_place(place, location):
 
     try:
         text = fetch_website_text(web)
-        text = clean_for_sqlite(text)            # ← sanitize before DB insert
+        text = clean_for_sqlite(text)
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
             return (name, addr, web, 1, lbl, text, location, rating, photo)
@@ -196,18 +193,43 @@ def label_rank(lbl):
 
 # ────────────────── Streamlit page setup ──────────────────────────────────────
 st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
+
+# --- light‑theme CSS ----------------------------------------------------------
 st.markdown(
     """
 <style>
-.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.15);
-      overflow:hidden;background:#fff;margin-bottom:24px}
+/* page background + default text */
+html, body, [data-testid="stAppViewContainer"]{
+    background:#f8f9fa !important;
+    color:#111 !important;
+}
+
+/* cards ------------------------------------------------- */
+.card{
+    border-radius:12px;
+    box-shadow:0 2px 6px rgba(0,0,0,.1);
+    overflow:hidden;
+    background:#fff;
+    margin-bottom:24px;
+}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
+
+/* text inside card */
 .title{font-size:1.05rem;font-weight:600;margin-bottom:4px;color:#111;}
-.addr{font-size:.9rem;color:#444;margin-bottom:6px}
+.addr{font-size:.9rem;color:#555;margin-bottom:6px}
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
+
+/* badge */
+.badge{
+    display:inline-block;
+    background:#e74c3c;
+    color:#fff;
+    border-radius:4px;
+    padding:2px 6px;
+    font-size:.75rem;
+    margin-bottom:6px;
+}
 </style>
 """,
     unsafe_allow_html=True,
