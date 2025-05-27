@@ -10,13 +10,23 @@ from places_api import text_search_restaurants, place_details
 from settings import GOOGLE_API_KEY
 
 # ────────────────── convenience helpers ──────────────────────────────────────
-def safe_rerun(): (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+def safe_rerun():
+    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
 def clean_utf8(s: str) -> str:
-    """Strip lone surrogate code‑points so SQLite accepts the string."""
+    """Strip lone surrogate code‑points so SQLite can UTF‑8‑encode."""
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
+def load_lottie(path: str):
+    """Return the Lottie JSON dict or None if the file is missing."""
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+
 def nice_types(tp: List[str]) -> List[str]:
+    """Readable chips from Google `types` (filtered, max 3)."""
     banned = {
         "restaurant", "food", "point_of_interest", "establishment",
         "store", "bar", "meal_takeaway", "meal_delivery"
@@ -24,7 +34,7 @@ def nice_types(tp: List[str]) -> List[str]:
     return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 def first_review(pid: str) -> str:
-    """Return ≤ 100‑character snippet from the first Google review."""
+    """≤ 100‑char snippet of the first Google review (blank if none)."""
     try:
         revs = (place_details(pid).get("reviews") or [])
         txt  = revs[0].get("text", "") if revs else ""
@@ -34,8 +44,8 @@ def first_review(pid: str) -> str:
         return ""
 
 def review_link(pid: str) -> str:
-    """Deep‑link to Google‑Maps place page showing reviews."""
-    return f"https://www.google.com/maps/search/?api=1&query_place_id={pid}"
+    """URL that opens the Google‑Maps reviews list directly."""
+    return f"https://search.google.com/local/reviews?placeid={pid}"
 
 # ────────────────── per‑session database ─────────────────────────────────────
 if "db_file" not in st.session_state:
@@ -43,20 +53,20 @@ if "db_file" not in st.session_state:
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"] = False
 
-DB_FILE = st.session_state["db_file"]
-LABEL_ORDER = list(PATTERNS.keys())
+DB_FILE      = st.session_state["db_file"]
+LABEL_ORDER  = list(PATTERNS.keys())
 
 SCHEMA = """
 CREATE TABLE restaurants (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT, address TEXT, website TEXT,
-    has_prix_fixe INTEGER, label TEXT,
-    raw_text TEXT,
-    snippet TEXT,
-    review_link TEXT,
-    types TEXT,
-    location TEXT, rating REAL, photo_ref TEXT,
-    UNIQUE(name, address, location)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT, address TEXT, website TEXT,
+  has_prix_fixe INTEGER, label TEXT,
+  raw_text TEXT,
+  snippet TEXT,
+  review_link TEXT,
+  types TEXT,
+  location TEXT, rating REAL, photo_ref TEXT,
+  UNIQUE(name, address, location)
 );
 """
 
@@ -65,37 +75,39 @@ def init_db():
         c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
 
 def ensure_schema():
-    if not os.path.exists(DB_FILE): init_db(); return
+    if not os.path.exists(DB_FILE):
+        init_db(); return
     try:
         with sqlite3.connect(DB_FILE) as c:
             c.execute("SELECT review_link FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:          # older schema
         init_db()
 
 def store_rows(rows):
     with sqlite3.connect(DB_FILE) as c:
         c.executemany("""
-          INSERT OR IGNORE INTO restaurants
-          (name,address,website,has_prix_fixe,label,raw_text,
-           snippet,review_link,types,location,rating,photo_ref)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT OR IGNORE INTO restaurants
+        (name,address,website,has_prix_fixe,label,raw_text,
+         snippet,review_link,types,location,rating,photo_ref)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows)
 
 def fetch_records(loc):
     with sqlite3.connect(DB_FILE) as c:
         return c.execute("""
-          SELECT name,address,website,label,snippet,review_link,
-                 types,rating,photo_ref
-          FROM restaurants WHERE has_prix_fixe=1 AND location=?""",
-          (loc,)).fetchall()
+        SELECT name,address,website,label,snippet,review_link,
+               types,rating,photo_ref
+        FROM restaurants WHERE has_prix_fixe=1 AND location=?
+        """, (loc,)).fetchall()
 
 # ────────────────── acquisition ──────────────────────────────────────────────
 def prioritize(places):
     hits = {"bistro","brasserie","trattoria","tavern",
             "grill","prix fixe","pre fixe","ristorante"}
-    return sorted(places,
-                  key=lambda p: -1 if any(k in p.get("name","").lower()
-                                          for k in hits) else 0)
+    return sorted(
+        places,
+        key=lambda p: -1 if any(k in p.get("name","").lower() for k in hits) else 0
+    )
 
 def process_place(place, loc):
     name, addr = place["name"], place["vicinity"]
@@ -162,6 +174,7 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
 .stButton>button:hover{background:#343a40!important;}
 .stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
+
 .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
@@ -189,8 +202,15 @@ location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 def run_search(limit):
     status = st.empty()
+    anim   = st.empty()
+
     status.markdown("### Please wait for The Fixe… *(we’re cooking)*",
                     unsafe_allow_html=True)
+    cook = load_lottie("Animation - 1748132250829.json")
+    if cook:
+        with anim.container():
+            st_lottie(cook, height=260, key=f"cook-{time.time()}")
+
     try:
         raw  = text_search_restaurants(location)
         cand = prioritize([p for p in raw if p.get("website")])
@@ -200,8 +220,13 @@ def run_search(limit):
         store_rows([r for r in rows if r])
     except Exception as e:
         st.error(f"Search failed: {e}")
+
     status.markdown("### The Fixe is in. Scroll below to see the deals.",
                     unsafe_allow_html=True)
+    done = load_lottie("Finished.json")
+    if done:
+        with anim.container():
+            st_lottie(done, height=260, key=f"done-{time.time()}")
 
 if st.button("Search"):
     st.session_state.update(searched=True, expanded=False)
@@ -219,10 +244,10 @@ if st.session_state.get("searched"):
                 with cols[i%3]:
                     st.markdown(build_card(n,a,w,lbl,snip,lnk,ty,rating,photo),
                                 unsafe_allow_html=True)
-        if not st.session_state["expanded"]:
+        if not st.session_state.get("expanded"):
             st.markdown("---")
             if st.button("Expand Search"):
-                st.session_state["expanded"]=True
+                st.session_state["expanded"] = True
                 run_search(limit=None)
                 safe_rerun()
     else:
