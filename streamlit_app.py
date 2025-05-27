@@ -16,13 +16,11 @@ from settings import GOOGLE_API_KEY
 
 # ────────────────── compatibility helper ──────────────────────────────────────
 def safe_rerun() -> None:
-    """Call st.rerun() on ≥ 1.27 or fall back to st.experimental_rerun()."""
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
 
 # ────────────────── unicode‑safety helper ─────────────────────────────────────
 def clean_for_sqlite(s: str) -> str:
-    """Strip lone surrogate code‑points so SQLite can UTF‑8‑encode the string."""
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
@@ -194,13 +192,37 @@ def label_rank(lbl):
 # ────────────────── Streamlit page setup ──────────────────────────────────────
 st.set_page_config(page_title="The Fixe", page_icon="🍽", layout="wide")
 
-# --- light‑theme CSS ----------------------------------------------------------
+# --- light‑theme CSS (expanded for widgets) -----------------------------------
 st.markdown(
     """
 <style>
 /* page background + default text */
 html, body, [data-testid="stAppViewContainer"]{
     background:#f8f9fa !important;
+    color:#111 !important;
+}
+
+/* Streamlit primary buttons */
+.stButton > button{
+    background:#212529 !important;
+    color:#fff !important;
+    border:none !important;
+    border-radius:0.25rem !important;
+    padding:0.5rem 1rem !important;
+    font-weight:600 !important;
+}
+.stButton > button:hover{
+    background:#343a40 !important;
+    color:#fff !important;
+}
+
+/* text input */
+.stTextInput > div > div > input{
+    background:#fff !important;
+    color:#111 !important;
+    border:1px solid #ced4da !important;
+}
+.stTextInput > label{
     color:#111 !important;
 }
 
