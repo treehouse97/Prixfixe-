@@ -14,9 +14,11 @@ def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
 def clean_utf8(s: str) -> str:
+    """Strip lone surrogate code‑points so SQLite can UTF‑8‑encode."""
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 def load_lottie(path: str):
+    """Return the Lottie JSON dict or None if the file is missing."""
     try:
         with open(path, "r") as fh:
             return json.load(fh)
@@ -24,6 +26,7 @@ def load_lottie(path: str):
         return None
 
 def nice_types(tp: List[str]) -> List[str]:
+    """Readable chips from Google `types` (filtered, max 3)."""
     banned = {
         "restaurant", "food", "point_of_interest", "establishment",
         "store", "bar", "meal_takeaway", "meal_delivery"
@@ -31,6 +34,7 @@ def nice_types(tp: List[str]) -> List[str]:
     return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 def first_review(pid: str) -> str:
+    """≤ 100‑char snippet of the first Google review (blank if none)."""
     try:
         revs = (place_details(pid).get("reviews") or [])
         txt  = revs[0].get("text", "") if revs else ""
@@ -40,6 +44,7 @@ def first_review(pid: str) -> str:
         return ""
 
 def review_link(pid: str) -> str:
+    """URL that opens the Google‑Maps reviews list directly."""
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 # ────────────────── per‑session database ─────────────────────────────────────
@@ -75,7 +80,7 @@ def ensure_schema():
     try:
         with sqlite3.connect(DB_FILE) as c:
             c.execute("SELECT review_link FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError:          # older schema
         init_db()
 
 def store_rows(rows):
@@ -134,33 +139,24 @@ def process_place(place, loc):
 
 # ────────────────── UI helpers ───────────────────────────────────────────────
 def build_card(name,addr,web,lbl,snippet,link,types_txt,rating,photo):
-    type_chips = "".join(
-        f'<span class="chip-inline">{t}</span>'
-        for t in (types_txt.split(", ") if types_txt else [])
-    )
-    photo_tag = (
-        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo else ""
-    )
-    header = f'<span class="badge">{lbl}</span>{type_chips}'
-    snippet_html = (
-        f'<p class="snippet">💬 {snippet} '
-        f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
-        if snippet else ""
-    )
-    rating_html = (
-        f'<div class="rate">{rating:.1f} / 5</div>'
-        if rating else ""
-    )
-
+    chips = "".join(f'<span class="chip">{t}</span>'
+                    for t in (types_txt.split(", ") if types_txt else []))
+    photo_tag = (f'<img src="https://maps.googleapis.com/maps/api/place/photo'
+                 f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
+                 if photo else "")
+    snippet_html = (f'<p class="snippet">💬 {snippet} '
+                    f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
+                    if snippet else "")
+    rating_html  = (f'<div class="rate">{rating:.1f} / 5</div>'
+                    if rating else "")
     return f"""
 <div class="card">
   {photo_tag}
   <div class="body">
-    {header}
+    <span class="badge">{lbl}</span>
     <div class="title">{name}</div>
     {snippet_html}
+    <div class="chips">{chips}</div>
     <div class="addr">{addr}</div>
     {rating_html}
     <a href="{web}" target="_blank">Visit&nbsp;Site</a>
@@ -182,18 +178,16 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
-
-.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-       padding:2px 6px;font-size:.75rem;margin-right:6px}
-
-.chip-inline{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
-             padding:2px 8px;font-size:.72rem;margin-right:4px}
-
-.title{font-size:1.05rem;font-weight:600;margin:2px 0 4px;color:#111;}
+.title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
 .snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}
 .snippet a{color:#0d6efd;text-decoration:none}
+.chips{margin-bottom:4px}
+.chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
+      padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
 .addr{font-size:.9rem;color:#555;margin-bottom:6px}
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
+.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
+       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,7 +201,9 @@ if st.button("Reset Database"):
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 def run_search(limit):
-    status = st.empty(); anim = st.empty()
+    status = st.empty()
+    anim   = st.empty()
+
     status.markdown("### Please wait for The Fixe… *(we’re cooking)*",
                     unsafe_allow_html=True)
     cook = load_lottie("Animation - 1748132250829.json")
