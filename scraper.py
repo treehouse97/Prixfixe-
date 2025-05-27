@@ -1,100 +1,84 @@
 # scraper.py
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-import re
-import fitz  # PyMuPDF
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re, io, requests
+from typing import Tuple, Dict, List
+from bs4 import BeautifulSoup, Comment
+from PyPDF2 import PdfReader
 
-
-PATTERNS = {
-    "prix fixe": r"prix[\s\-]*fixe",
-    "pre fixe": r"pre[\s\-]*fixe",
-    "price fixed": r"price[\s\-]*fixed",
-    "3-course": r"(three|3)[\s\-]*(course|courses)",
-    "multi-course": r"\d+\s*course\s*meal",
-    "fixed menu": r"(fixed|set)[\s\-]*(menu|meal)",
-    "tasting menu": r"tasting\s*menu",
-    "special menu": r"special\s*(menu|offer|deal)",
-    "complete lunch": r"complete\s*(lunch|dinner)\s*special",
-    "lunch special": r"(lunch|dinner)\s*special\s*(menu|offer)?",
-    "specials": r"(today'?s|weekday|weekend)?\s*specials",
-    "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
-    "combo deal": r"(combo|combination)\s*(deal|meal|menu)",
-    "value menu": r"value\s*(menu|deal|offer)",
-    "deals": r"\bdeals?\b"
+# ────────────────────────────────────────────────────────────────────────────
+# Patterns you already maintain
+PATTERNS: Dict[str, List[re.Pattern]] = {
+    "prix fixe":   [re.compile(r"\bprix\s*f(i|í)x(e)?",  re.I)],
+    "pre fixe":    [re.compile(r"\bpre\s*f(i|í)xe?",     re.I)],
+    "specials":    [re.compile(r"\bspecials?\b",         re.I)],
+    "lunch special":[re.compile(r"\blunch\s+specials?\b",re.I)],
 }
 
+# ────────────────── public helpers ──────────────────────────────────────────
+def fetch_website_text(url: str, timeout: int = 10) -> str:
+    """
+    Return plain‑text from `url`.
+    • If the target (or redirected target) is a PDF, extract its text.
+    • Else strip HTML *and* merge text from up to 3 linked PDFs.
+    """
+    try:
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": _UA})
+        r.raise_for_status()
+    except Exception:
+        return ""
 
-def _extract_text_and_match(resp, source_url):
-    content_type = resp.headers.get("Content-Type", "").lower()
-    if "pdf" in content_type or source_url.lower().endswith(".pdf"):
+    ctype = r.headers.get("content-type", "")
+    if _looks_like_pdf(url, ctype):
+        return _pdf_bytes_to_text(r.content)
+
+    # HTML path
+    html_text = _html_to_text(r.text)
+    pdf_texts = []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    pdf_links = [a["href"] for a in soup.find_all("a", href=True)
+                 if a["href"].lower().endswith(".pdf")][:3]
+    for href in pdf_links:
+        abs_url = requests.compat.urljoin(r.url, href)
         try:
-            doc = fitz.open(stream=resp.content, filetype="pdf")
-            text = " ".join(page.get_text() for page in doc).lower()
+            p = requests.get(abs_url, timeout=timeout, headers={"User-Agent": _UA})
+            p.raise_for_status()
+            if _looks_like_pdf(abs_url, p.headers.get("content-type", "")):
+                pdf_texts.append(_pdf_bytes_to_text(p.content))
         except Exception:
-            return "", None
-    else:
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = " ".join(
-            s.get_text(" ", strip=True).lower()
-            for s in soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
-        )
+            continue
 
-    for label, pattern in PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return text, label
-    return text, None
+    return html_text + "\n".join(pdf_texts)
 
 
-def fetch_website_text(url: str) -> str:
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    visited = set()
-    collected_text = ""
-
-    try:
-        base_resp = requests.get(url, headers=headers, timeout=10)
-        base_resp.raise_for_status()
-
-        base_text, match_label = _extract_text_and_match(base_resp, url)
-        collected_text += base_text
-        if match_label:
-            return collected_text.strip()
-
-        soup = BeautifulSoup(base_resp.text, "html.parser")
-        base_domain = urlparse(url).netloc
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = []
-            for a in soup.find_all("a", href=True):
-                full_url = urljoin(url, a["href"])
-                if urlparse(full_url).netloc != base_domain or full_url in visited:
-                    continue
-                visited.add(full_url)
-                futures.append(executor.submit(_safe_fetch_and_match, full_url, headers))
-
-            for future in as_completed(futures):
-                sub_text, match_label = future.result()
-                collected_text += " " + sub_text
-                if match_label:
-                    return collected_text.strip()
-    except Exception:
-        pass
-
-    return collected_text.strip()
-
-
-def _safe_fetch_and_match(link_url, headers):
-    try:
-        sub_resp = requests.get(link_url, headers=headers, timeout=10)
-        sub_resp.raise_for_status()
-        return _extract_text_and_match(sub_resp, link_url)
-    except Exception:
-        return "", None
-
-
-def detect_prix_fixe_detailed(text: str):
-    for label, pattern in PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return True, label
+def detect_prix_fixe_detailed(text: str) -> Tuple[bool, str]:
+    text_low = text.lower()
+    for label, regs in PATTERNS.items():
+        for rx in regs:
+            if rx.search(text_low):
+                return True, label
     return False, ""
+
+
+# ────────────────── internal utilities ──────────────────────────────────────
+_UA = ("Mozilla/5.0 (compatible; TheFixeBot/1.0; "
+       "+https://github.com/yourproject)")
+
+def _looks_like_pdf(url: str, ctype: str) -> bool:
+    return url.lower().endswith(".pdf") or "application/pdf" in ctype.lower()
+
+def _html_to_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    for c in soup.find_all(text=lambda t: isinstance(t, Comment)):
+        c.extract()
+    text = soup.get_text(separator=" ", strip=True)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+def _pdf_bytes_to_text(data: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        return " ".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
