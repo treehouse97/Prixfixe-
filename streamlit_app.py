@@ -14,11 +14,9 @@ def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
 def clean_utf8(s: str) -> str:
-    """Strip lone surrogate code‑points so SQLite can UTF‑8‑encode."""
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 def load_lottie(path: str):
-    """Return the Lottie JSON dict or None if the file is missing."""
     try:
         with open(path, "r") as fh:
             return json.load(fh)
@@ -26,26 +24,37 @@ def load_lottie(path: str):
         return None
 
 def nice_types(tp: List[str]) -> List[str]:
-    """Readable chips from Google `types` (filtered, max 3)."""
-    banned = {
-        "restaurant", "food", "point_of_interest", "establishment",
-        "store", "bar", "meal_takeaway", "meal_delivery"
-    }
-    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
+    banned = {"restaurant","food","point_of_interest","establishment",
+              "store","bar","meal_takeaway","meal_delivery"}
+    return [t.replace("_"," ").title() for t in tp if t not in banned][:3]
 
 def first_review(pid: str) -> str:
-    """≤ 100‑char snippet of the first Google review (blank if none)."""
     try:
         revs = (place_details(pid).get("reviews") or [])
-        txt  = revs[0].get("text", "") if revs else ""
-        txt  = re.sub(r"\s+", " ", txt).strip()
-        return (txt[:100] + "…") if len(txt) > 100 else txt
+        txt  = revs[0].get("text","") if revs else ""
+        txt  = re.sub(r"\s+"," ",txt).strip()
+        return (txt[:100]+"…") if len(txt)>100 else txt
     except Exception:
         return ""
 
 def review_link(pid: str) -> str:
-    """URL that opens the Google‑Maps reviews list directly."""
     return f"https://search.google.com/local/reviews?placeid={pid}"
+
+# ────────────────── deal‑category mapping ────────────────────────────────────
+DEAL_GROUPS = {
+    "Prix Fixe":      {"prix fixe","pre fixe","price fixed"},
+    "Lunch Special":  {"lunch special","complete lunch"},
+    "Specials":       {"specials","special menu","weekly special"},
+    "Fixed Menu":     {"fixed menu","tasting menu","multi-course","3-course"},
+    "Deals":          {"combo deal","value menu","deals"},
+}
+
+def canonical_group(label: str) -> str:
+    l = label.lower()
+    for g, lbls in DEAL_GROUPS.items():
+        if l in lbls:
+            return g
+    return label.title()   # fallback (should not happen)
 
 # ────────────────── per‑session database ─────────────────────────────────────
 if "db_file" not in st.session_state:
@@ -80,7 +89,7 @@ def ensure_schema():
     try:
         with sqlite3.connect(DB_FILE) as c:
             c.execute("SELECT review_link FROM restaurants LIMIT 1")
-    except sqlite3.OperationalError:          # older schema
+    except sqlite3.OperationalError:
         init_db()
 
 def store_rows(rows):
@@ -154,9 +163,9 @@ def build_card(name,addr,web,lbl,snippet,link,types_txt,rating,photo):
   {photo_tag}
   <div class="body">
     <span class="badge">{lbl}</span>
+    {chips}
     <div class="title">{name}</div>
     {snippet_html}
-    <div class="chips">{chips}</div>
     <div class="addr">{addr}</div>
     {rating_html}
     <a href="{web}" target="_blank">Visit&nbsp;Site</a>
@@ -187,7 +196,7 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .addr{font-size:.9rem;color:#555;margin-bottom:6px}
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-       padding:2px 6px;font-size:.75rem;margin-bottom:6px}
+       padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -200,10 +209,16 @@ if st.button("Reset Database"):
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-def run_search(limit):
-    status = st.empty()
-    anim   = st.empty()
+# NEW: deal‑type selector
+deal_options = ["Any deal"] + list(DEAL_GROUPS.keys())
+selected_deals = st.multiselect("Deal type (optional)", deal_options,
+                                default=["Any deal"])
 
+def want_group(g: str) -> bool:
+    return ("Any deal" in selected_deals) or (g in selected_deals)
+
+def run_search(limit):
+    status = st.empty(); anim = st.empty()
     status.markdown("### Please wait for The Fixe… *(we’re cooking)*",
                     unsafe_allow_html=True)
     cook = load_lottie("Animation - 1748132250829.json")
@@ -236,14 +251,20 @@ if st.session_state.get("searched"):
     recs = fetch_records(location)
     if recs:
         grp={}
-        for r in recs: grp.setdefault(r[3].lower(), []).append(r)
-        for lbl in sorted(grp, key=label_rank):
-            st.subheader(lbl.title())
+        for r in recs:
+            group_key = canonical_group(r[3])
+            if not want_group(group_key):
+                continue  # filtered out
+            grp.setdefault(group_key, []).append(r)
+
+        for g in sorted(grp.keys()):
+            st.subheader(g)
             cols = st.columns(3)
-            for i,(n,a,w,_,snip,lnk,ty,rating,photo) in enumerate(grp[lbl]):
+            for i,(n,a,w,_,snip,lnk,ty,rating,photo) in enumerate(grp[g]):
                 with cols[i%3]:
-                    st.markdown(build_card(n,a,w,lbl,snip,lnk,ty,rating,photo),
+                    st.markdown(build_card(n,a,w,g,snip,lnk,ty,rating,photo),
                                 unsafe_allow_html=True)
+
         if not st.session_state.get("expanded"):
             st.markdown("---")
             if st.button("Expand Search"):
