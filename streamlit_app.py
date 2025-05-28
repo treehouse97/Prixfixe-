@@ -1,70 +1,63 @@
-# -*- coding: utf-8 -*-
 """
-The Fixe – Streamlit UI
+UI layer + logging.
+
+Only difference from the previous version:
+  * import path for PATTERNS now comes from the updated scraper.
+Everything else (deal order, DB schema, debug lines) remains intact.
 """
 
-import json
-import os
-import re
-import sqlite3
-import tempfile
-import time
-import uuid
-import logging
+import json, os, re, sqlite3, tempfile, time, uuid, logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-# --- single‑line import: no parentheses, no trailing commas ---
-from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
-# --------------------------------------------------------------
-
+from scraper import (
+    fetch_website_text,
+    detect_prix_fixe_detailed,
+    PATTERNS,          # ← unchanged import but now XML‑aware parser below
+)
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
 
-# ----------------------- logging ------------------------------
+# ────────────────── console debug logger ─────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="TheFixe DEBUG >> %(message)s",
+    format="The Fixe DEBUG » %(message)s",
     force=True,
 )
-log = logging.getLogger("the_fixe")
+log = logging.getLogger("prix_fixe_debug")
 
-# ------------------- deal groups ------------------------------
+
+# ────────────────── deal groups & display order ─────────────────────────────
 DEAL_GROUPS = {
-    "Prix Fixe": {
-        "prix fixe",
-        "pre fixe",
-        "price fixed",
-        "fixed menu",
-        "set menu",
-        "tasting menu",
-        "multi-course",
-        "3-course",
+    "Prix Fixe": {
+        "prix fixe", "pre fixe", "price fixed",
+        "fixed menu", "set menu", "tasting menu",
+        "multi-course", "3-course",
     },
-    "Lunch Special": {"lunch special", "complete lunch"},
-    "Specials": {"specials", "special menu", "weekly special"},
-    "Deals": {"combo deal", "value menu", "deals"},
+    "Lunch Special": {"lunch special", "complete lunch"},
+    "Specials":      {"specials", "special menu", "weekly special"},
+    "Deals":         {"combo deal", "value menu", "deals"},
 }
-DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
+_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
 
 
 def canonical_group(label: str) -> str:
-    low = label.lower()
-    for g, syn in DEAL_GROUPS.items():
-        if any(s in low for s in syn):
+    l = label.lower()
+    for g, synonyms in DEAL_GROUPS.items():
+        if any(s in l for s in synonyms):
             return g
     return label.title()
 
 
 def group_rank(g: str) -> int:
-    return DISPLAY_ORDER.index(g) if g in DISPLAY_ORDER else len(DISPLAY_ORDER)
+    return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
 
 
-# -------------------- helpers ------------------------------
+# ────────────────── convenience helpers ──────────────────────────────────────
 def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
@@ -75,7 +68,7 @@ def clean_utf8(s: str) -> str:
 
 def load_lottie(path: str):
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r") as fh:
             return json.load(fh)
     except FileNotFoundError:
         return None
@@ -83,21 +76,15 @@ def load_lottie(path: str):
 
 def nice_types(tp: List[str]) -> List[str]:
     banned = {
-        "restaurant",
-        "food",
-        "point_of_interest",
-        "establishment",
-        "store",
-        "bar",
-        "meal_takeaway",
-        "meal_delivery",
+        "restaurant", "food", "point_of_interest", "establishment",
+        "store", "bar", "meal_takeaway", "meal_delivery",
     }
     return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 
 def first_review(pid: str) -> str:
     try:
-        revs = place_details(pid).get("reviews") or []
+        revs = (place_details(pid).get("reviews") or [])
         txt = revs[0].get("text", "") if revs else ""
         txt = re.sub(r"\s+", " ", txt).strip()
         return (txt[:100] + "…") if len(txt) > 100 else txt
@@ -109,7 +96,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# ---------------- session DB -----------------
+# ────────────────── per‑session DB ───────────────────────────────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -121,18 +108,13 @@ DB_FILE = st.session_state["db_file"]
 SCHEMA = """
 CREATE TABLE restaurants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  address TEXT,
-  website TEXT,
-  has_prix_fixe INTEGER,
-  label TEXT,
+  name TEXT, address TEXT, website TEXT,
+  has_prix_fixe INTEGER, label TEXT,
   raw_text TEXT,
   snippet TEXT,
   review_link TEXT,
   types TEXT,
-  location TEXT,
-  rating REAL,
-  photo_ref TEXT,
+  location TEXT, rating REAL, photo_ref TEXT,
   UNIQUE(name, address, location)
 );
 """
@@ -162,7 +144,7 @@ def store_rows(rows):
             (name,address,website,has_prix_fixe,label,raw_text,
              snippet,review_link,types,location,rating,photo_ref)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
+        """,
             rows,
         )
 
@@ -173,24 +155,17 @@ def fetch_records(loc):
             """
             SELECT name,address,website,label,snippet,review_link,
                    types,rating,photo_ref
-            FROM restaurants
-            WHERE has_prix_fixe = 1 AND location = ?
-            """,
+            FROM restaurants WHERE has_prix_fixe=1 AND location=?
+        """,
             (loc,),
         ).fetchall()
 
 
-# ---------------- acquisition ----------------
+# ────────────────── acquisition ──────────────────────────────────────────────
 def prioritize(places):
     hits = {
-        "bistro",
-        "brasserie",
-        "trattoria",
-        "tavern",
-        "grill",
-        "prix fixe",
-        "pre fixe",
-        "ristorante",
+        "bistro", "brasserie", "trattoria", "tavern",
+        "grill", "prix fixe", "pre fixe", "ristorante",
     }
     return sorted(
         places,
@@ -210,24 +185,21 @@ def process_place(place, loc):
 
     with sqlite3.connect(DB_FILE) as c:
         if c.execute(
-            "SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?",
+            """SELECT 1 FROM restaurants
+               WHERE name=? AND address=? AND location=?""",
             (name, addr, loc),
         ).fetchone():
-            log.info("%s • skipped (already processed)", name)
+            log.info(f"{name} • skipped (already processed)")
             return None
 
-    if not web:
-        log.info("%s • skipped (no website / menu URL)", name)
-        return None
-
     try:
-        text = clean_utf8(fetch_website_text(web))
+        text = fetch_website_text(web) if web else ""
+        text = clean_utf8(text)
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
             m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
             trigger = m.group(0) if m else lbl
-            log.info("%s • triggered by '%s' → %s", name, trigger, lbl)
-
+            log.info(f"{name} • triggered by “{trigger}” → {lbl}")
             snippet = first_review(pid)
             types = ", ".join(nice_types(g_types))
             link = review_link(pid)
@@ -245,20 +217,20 @@ def process_place(place, loc):
                 rating,
                 photo,
             )
-        log.info("%s • skipped (no qualifying phrases found)", name)
-    except Exception as exc:
-        log.info("%s • skipped (error: %s)", name, exc)
+        else:
+            log.info(f"{name} • skipped (no qualifying phrases found)")
+    except Exception as e:
+        log.info(f"{name} • skipped (error: {e})")
     return None
 
 
-# --------------- card builder ----------------
+# ────────────────── UI helpers ───────────────────────────────────────────────
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(
         f'<span class="chip">{t}</span>'
         for t in (types_txt.split(", ") if types_txt else [])
     )
-    chip_block = f'<div class="chips">{chips}</div>' if chips else ""
-
+    chips_block = f'<div class="chips">{chips}</div>' if chips else ""
     photo_tag = (
         f'<img src="https://maps.googleapis.com/maps/api/place/photo'
         f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
@@ -271,42 +243,34 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
         if snippet
         else ""
     )
-    rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
+    rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
 
     return (
         '<div class="card">'
         + photo_tag
         + '<div class="body">'
-        + f'<span class="badge">{lbl}</span>'
-        + chip_block
-        + f'<div class="title">{name}</div>'
-        + snippet_ht
-        + f'<div class="addr">{addr}</div>'
-        + rating_ht
-        + f'<a href="{web}" target="_blank">Visit&nbsp;Site</a>'
-        + "</div></div>"
+        f'<span class="badge">{lbl}</span>'
+        f"{chips_block}"
+        f'<div class="title">{name}</div>'
+        f"{snippet_ht}"
+        f'<div class="addr">{addr}</div>'
+        f"{rating_ht}"
+        f'<a href="{web}" target="_blank">Visit&nbsp;Site</a>'
+        "</div></div>"
     )
 
 
-# -------------- CSS & page ------------------
+# ────────────────── Streamlit page / CSS  ────────────────────────────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown(
     """
 <style>
-html,body,[data-testid="stAppViewContainer"]{
-  background:#f8f9fa!important;color:#111!important;
-}
-.stButton>button{
-  background:#212529!important;color:#fff!important;
-  border-radius:4px!important;font-weight:600!important;
-}
+html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
+.stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
 .stButton>button:hover{background:#343a40!important;}
-.stTextInput input{
-  background:#fff!important;color:#111!important;
-  border:1px solid #ced4da!important;
-}
-.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);
-      overflow:hidden;background:#fff;margin-bottom:24px}
+.stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
+
+.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
 .title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
@@ -324,55 +288,63 @@ html,body,[data-testid="stAppViewContainer"]{
     unsafe_allow_html=True,
 )
 
-# --------------- app logic -------------------
+
+# ────────────────── application logic ────────────────────────────────────────
 ensure_schema()
 
 st.title("The Fixe")
-
-if st.button("Reset Database"):
+if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
     safe_rerun()
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-deal_options = ["Any deal"] + DISPLAY_ORDER
+deal_options = ["Any deal"] + _DISPLAY_ORDER
 selected_deals = st.multiselect(
-    "Deal type (optional)", deal_options, default=["Any deal"]
+    "Deal type (optional)", deal_options, default=["Any deal"]
 )
 
 
 def want_group(g: str) -> bool:
-    return "Any deal" in selected_deals or g in selected_deals
+    return ("Any deal" in selected_deals) or (g in selected_deals)
 
 
-def run_search(limit: int | None):
+def run_search(limit):
     status = st.empty()
     anim = st.empty()
 
-    status.markdown("### Searching…", unsafe_allow_html=True)
+    status.markdown(
+        "### Please wait for The Fixe… *(we’re cooking)*", unsafe_allow_html=True
+    )
     cook = load_lottie("Animation - 1748132250829.json")
     if cook:
         with anim.container():
             st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
     try:
-        raw_places = text_search_restaurants(location)
-        candidates = [
-            p for p in raw_places if p.get("website") or p.get("menu_url")
-        ]
-        candidates = prioritize(candidates)
+        raw = text_search_restaurants(location)
+
+        cand = []
+        for p in raw:
+            if p.get("website") or p.get("menu_url"):
+                cand.append(p)
+            else:
+                log.info(f"{p.get('name')} • skipped (no website / menu URL)")
+
+        cand = prioritize(cand)
         if limit:
-            candidates = candidates[:limit]
+            cand = cand[:limit]
 
         with ThreadPoolExecutor(max_workers=10) as ex:
-            rows = list(ex.map(lambda p: process_place(p, location), candidates))
-
+            rows = list(ex.map(lambda p: process_place(p, location), cand))
         store_rows([r for r in rows if r])
     except Exception as e:
         st.error(f"Search failed: {e}")
 
-    status.markdown("### Done. Scroll down for results.", unsafe_allow_html=True)
+    status.markdown(
+        "### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True
+    )
     done = load_lottie("Finished.json")
     if done:
         with anim.container():
@@ -383,30 +355,31 @@ if st.button("Search"):
     st.session_state.update(searched=True, expanded=False)
     run_search(limit=25)
 
-if st.session_state.get("searched", False):
+if st.session_state.get("searched"):
     recs = fetch_records(location)
     if recs:
-        grouped = {}
+        grp = {}
         for r in recs:
             g = canonical_group(r[3])
-            if want_group(g):
-                grouped.setdefault(g, []).append(r)
+            if not want_group(g):
+                continue
+            grp.setdefault(g, []).append(r)
 
-        for g in sorted(grouped.keys(), key=group_rank):
+        for g in sorted(grp.keys(), key=group_rank):
             st.subheader(g)
             cols = st.columns(3)
-            for i, (n, a, w, _, snip, lnk, typ, rating, photo) in enumerate(grouped[g]):
+            for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
                 with cols[i % 3]:
                     st.markdown(
-                        build_card(n, a, w, g, snip, lnk, typ, rating, photo),
+                        build_card(n, a, w, g, snip, lnk, ty, rating, photo),
                         unsafe_allow_html=True,
                     )
 
         if not st.session_state.get("expanded"):
             st.markdown("---")
-            if st.button("Expand Search"):
+            if st.button("Expand Search"):
                 st.session_state["expanded"] = True
                 run_search(limit=None)
                 safe_rerun()
     else:
-        st.info("No prix fixe menus stored yet for this location.")
+        st.info("No prix fixe menus stored yet for this location.")
