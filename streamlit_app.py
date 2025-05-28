@@ -1,14 +1,23 @@
-# streamlit_app.py
-import json, os, re, sqlite3, tempfile, time, uuid
+import json, os, re, sqlite3, tempfile, time, uuid, logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import fetch_website_text, detect_prix_fixe_detailed
+from scraper import (
+    fetch_website_text,
+    detect_prix_fixe_detailed,
+    PATTERNS,          # needed for log
+)
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
+
+
+# ────────────────── console debug logger ─────────────────────────────────────
+logging.basicConfig(level=logging.INFO,
+                    format="The Fixe DEBUG » %(message)s")
+log = logging.getLogger("prix_fixe_debug")
 
 
 # ────────────────── deal groups & display order ─────────────────────────────
@@ -34,13 +43,10 @@ def canonical_group(label: str) -> str:
 
 
 def group_rank(g: str) -> int:
-    try:
-        return _DISPLAY_ORDER.index(g)
-    except ValueError:
-        return len(_DISPLAY_ORDER)
+    return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
 
 
-# ────────────────── Streamlit helpers (unchanged API) ───────────────────────
+# ────────────────── convenience helpers ──────────────────────────────────────
 def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
@@ -77,7 +83,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# ────────────────── per‑session DB (unchanged schema) ───────────────────────
+# ────────────────── per‑session DB ───────────────────────────────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
@@ -164,6 +170,11 @@ def process_place(place, loc):
         text = clean_utf8(text)
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
+            # ── DEBUG LOG ────────────────────────────────────────────────────
+            m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
+            trigger = m.group(0) if m else lbl
+            log.info(f"{name} • triggered by “{trigger}” → {lbl}")
+            # ────────────────────────────────────────────────────────────────
             snippet = first_review(pid)
             types = ", ".join(nice_types(g_types))
             link = review_link(pid)
