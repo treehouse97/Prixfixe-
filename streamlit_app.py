@@ -8,15 +8,18 @@ from streamlit_lottie import st_lottie
 from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
-    PATTERNS,          # needed for log
+    PATTERNS,
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
 
 # ────────────────── console debug logger ─────────────────────────────────────
-logging.basicConfig(level=logging.INFO,
-                    format="The Fixe DEBUG » %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="The Fixe DEBUG » %(message)s",
+    force=True,            # overwrite any existing basicConfig in host
+)
 log = logging.getLogger("prix_fixe_debug")
 
 
@@ -64,8 +67,10 @@ def load_lottie(path: str):
 
 
 def nice_types(tp: List[str]) -> List[str]:
-    banned = {"restaurant", "food", "point_of_interest", "establishment",
-              "store", "bar", "meal_takeaway", "meal_delivery"}
+    banned = {
+        "restaurant", "food", "point_of_interest", "establishment",
+        "store", "bar", "meal_takeaway", "meal_delivery",
+    }
     return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 
@@ -86,7 +91,8 @@ def review_link(pid: str) -> str:
 # ────────────────── per‑session DB ───────────────────────────────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
-        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
+        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
+    )
     st.session_state["searched"] = False
 
 DB_FILE = st.session_state["db_file"]
@@ -124,30 +130,40 @@ def ensure_schema():
 
 def store_rows(rows):
     with sqlite3.connect(DB_FILE) as c:
-        c.executemany("""
+        c.executemany(
+            """
             INSERT OR IGNORE INTO restaurants
             (name,address,website,has_prix_fixe,label,raw_text,
              snippet,review_link,types,location,rating,photo_ref)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
+        """,
+            rows,
+        )
 
 
 def fetch_records(loc):
     with sqlite3.connect(DB_FILE) as c:
-        return c.execute("""
+        return c.execute(
+            """
             SELECT name,address,website,label,snippet,review_link,
                    types,rating,photo_ref
             FROM restaurants WHERE has_prix_fixe=1 AND location=?
-        """, (loc,)).fetchall()
+        """,
+            (loc,),
+        ).fetchall()
 
 
 # ────────────────── acquisition ──────────────────────────────────────────────
 def prioritize(places):
-    hits = {"bistro", "brasserie", "trattoria", "tavern",
-            "grill", "prix fixe", "pre fixe", "ristorante"}
+    hits = {
+        "bistro", "brasserie", "trattoria", "tavern",
+        "grill", "prix fixe", "pre fixe", "ristorante",
+    }
     return sorted(
         places,
-        key=lambda p: -1 if any(k in p.get("name", "").lower() for k in hits) else 0
+        key=lambda p: -1
+        if any(k in p.get("name", "").lower() for k in hits)
+        else 0,
     )
 
 
@@ -160,9 +176,12 @@ def process_place(place, loc):
     g_types = place.get("types", [])
 
     with sqlite3.connect(DB_FILE) as c:
-        if c.execute("""SELECT 1 FROM restaurants
-                        WHERE name=? AND address=? AND location=?""",
-                     (name, addr, loc)).fetchone():
+        if c.execute(
+            """SELECT 1 FROM restaurants
+               WHERE name=? AND address=? AND location=?""",
+            (name, addr, loc),
+        ).fetchone():
+            log.info(f"{name} • skipped (already processed)")
             return None
 
     try:
@@ -170,51 +189,73 @@ def process_place(place, loc):
         text = clean_utf8(text)
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
-            # ── DEBUG LOG ────────────────────────────────────────────────────
             m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
             trigger = m.group(0) if m else lbl
             log.info(f"{name} • triggered by “{trigger}” → {lbl}")
-            # ────────────────────────────────────────────────────────────────
             snippet = first_review(pid)
             types = ", ".join(nice_types(g_types))
             link = review_link(pid)
-            return (name, addr, web, 1, lbl, text, snippet, link, types,
-                    loc, rating, photo)
-    except Exception:
-        pass
+            return (
+                name,
+                addr,
+                web,
+                1,
+                lbl,
+                text,
+                snippet,
+                link,
+                types,
+                loc,
+                rating,
+                photo,
+            )
+        else:
+            log.info(f"{name} • skipped (no qualifying phrases found)")
+    except Exception as e:
+        log.info(f"{name} • skipped (error: {e})")
     return None
 
 
 # ────────────────── UI helpers ───────────────────────────────────────────────
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
-    chips = "".join(f'<span class="chip">{t}</span>'
-                    for t in (types_txt.split(", ") if types_txt else []))
+    chips = "".join(
+        f'<span class="chip">{t}</span>'
+        for t in (types_txt.split(", ") if types_txt else [])
+    )
     chips_block = f'<div class="chips">{chips}</div>' if chips else ""
-    photo_tag = (f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-                 f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-                 if photo else "")
-    snippet_ht = (f'<p class="snippet">💬 {snippet} '
-                  f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
-                  if snippet else "")
+    photo_tag = (
+        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
+        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
+        if photo
+        else ""
+    )
+    snippet_ht = (
+        f'<p class="snippet">💬 {snippet} '
+        f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
+        if snippet
+        else ""
+    )
     rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
 
     return (
-        '<div class="card">' + photo_tag +
-        '<div class="body">'
-          f'<span class="badge">{lbl}</span>'
-          f'{chips_block}'
-          f'<div class="title">{name}</div>'
-          f'{snippet_ht}'
-          f'<div class="addr">{addr}</div>'
-          f'{rating_ht}'
-          f'<a href="{web}" target="_blank">Visit&nbsp;Site</a>'
-        '</div></div>'
+        '<div class="card">'
+        + photo_tag
+        + '<div class="body">'
+        f'<span class="badge">{lbl}</span>'
+        f"{chips_block}"
+        f'<div class="title">{name}</div>'
+        f"{snippet_ht}"
+        f'<div class="addr">{addr}</div>'
+        f"{rating_ht}"
+        f'<a href="{web}" target="_blank">Visit&nbsp;Site</a>'
+        "</div></div>"
     )
 
 
 # ────────────────── Streamlit page / CSS  ────────────────────────────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
-st.markdown("""
+st.markdown(
+    """
 <style>
 html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
 .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
@@ -235,7 +276,9 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
        padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ────────────────── application logic ────────────────────────────────────────
@@ -250,9 +293,9 @@ if st.button("Reset Database"):
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 deal_options = ["Any deal"] + _DISPLAY_ORDER
-selected_deals = st.multiselect("Deal type (optional)",
-                                deal_options,
-                                default=["Any deal"])
+selected_deals = st.multiselect(
+    "Deal type (optional)", deal_options, default=["Any deal"]
+)
 
 
 def want_group(g: str) -> bool:
@@ -263,8 +306,9 @@ def run_search(limit):
     status = st.empty()
     anim = st.empty()
 
-    status.markdown("### Please wait for The Fixe… *(we’re cooking)*",
-                    unsafe_allow_html=True)
+    status.markdown(
+        "### Please wait for The Fixe… *(we’re cooking)*", unsafe_allow_html=True
+    )
     cook = load_lottie("Animation - 1748132250829.json")
     if cook:
         with anim.container():
@@ -272,17 +316,28 @@ def run_search(limit):
 
     try:
         raw = text_search_restaurants(location)
-        cand = prioritize([p for p in raw if p.get("website") or p.get("menu_url")])
+
+        # ── filter while logging skipped entries with no website/menu URL ────
+        cand = []
+        for p in raw:
+            if p.get("website") or p.get("menu_url"):
+                cand.append(p)
+            else:
+                log.info(f"{p.get('name')} • skipped (no website / menu URL)")
+
+        cand = prioritize(cand)
         if limit:
             cand = cand[:limit]
+
         with ThreadPoolExecutor(max_workers=10) as ex:
             rows = list(ex.map(lambda p: process_place(p, location), cand))
         store_rows([r for r in rows if r])
     except Exception as e:
         st.error(f"Search failed: {e}")
 
-    status.markdown("### The Fixe is in. Scroll below to see the deals.",
-                    unsafe_allow_html=True)
+    status.markdown(
+        "### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True
+    )
     done = load_lottie("Finished.json")
     if done:
         with anim.container():
@@ -308,8 +363,10 @@ if st.session_state.get("searched"):
             cols = st.columns(3)
             for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
                 with cols[i % 3]:
-                    st.markdown(build_card(n, a, w, g, snip, lnk, ty, rating, photo),
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        build_card(n, a, w, g, snip, lnk, ty, rating, photo),
+                        unsafe_allow_html=True,
+                    )
 
         if not st.session_state.get("expanded"):
             st.markdown("---")
