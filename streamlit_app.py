@@ -1,3 +1,4 @@
+# streamlit_app.py
 import json, os, re, sqlite3, tempfile, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -5,17 +6,41 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import (
-    fetch_website_text,
-    detect_prix_fixe_detailed,
-    PATTERNS,
-    LABEL_ORDER,        # ← now imported from scraper
-)
-from places_api import text_search_restaurants, place_details
+from scraper import fetch_website_text, detect_prix_fixe_detailed
 from settings import GOOGLE_API_KEY
+from places_api import text_search_restaurants, place_details
 
 
-# ────────────────── convenience helpers ──────────────────────────────────────
+# ────────────────── deal groups & display order ─────────────────────────────
+DEAL_GROUPS = {
+    "Prix Fixe": {
+        "prix fixe", "pre fixe", "price fixed",
+        "fixed menu", "set menu", "tasting menu",
+        "multi-course", "3-course",
+    },
+    "Lunch Special": {"lunch special", "complete lunch"},
+    "Specials":      {"specials", "special menu", "weekly special"},
+    "Deals":         {"combo deal", "value menu", "deals"},
+}
+_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
+
+
+def canonical_group(label: str) -> str:
+    l = label.lower()
+    for g, synonyms in DEAL_GROUPS.items():
+        if any(s in l for s in synonyms):
+            return g
+    return label.title()
+
+
+def group_rank(g: str) -> int:
+    try:
+        return _DISPLAY_ORDER.index(g)
+    except ValueError:
+        return len(_DISPLAY_ORDER)
+
+
+# ────────────────── Streamlit helpers (unchanged API) ───────────────────────
 def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
@@ -52,26 +77,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# ────────────────── deal‑category mapping ────────────────────────────────────
-DEAL_GROUPS = {
-    "Prix Fixe":     {"prix fixe", "pre fixe", "price fixed"},
-    "Lunch Special": {"lunch special", "complete lunch"},
-    "Specials":      {"specials", "special menu", "weekly special"},
-    "Fixed Menu":    {"fixed menu", "set menu", "tasting menu",  # ← added “set menu”
-                      "multi-course", "3-course"},
-    "Deals":         {"combo deal", "value menu", "deals"},
-}
-
-
-def canonical_group(label: str) -> str:
-    l = label.lower()
-    for g, syn in DEAL_GROUPS.items():
-        if any(s in l for s in syn):
-            return g
-    return label.title()
-
-
-# ────────────────── per‑session database ─────────────────────────────────────
+# ────────────────── per‑session DB (unchanged schema) ───────────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
@@ -105,7 +111,7 @@ def ensure_schema():
         return
     try:
         with sqlite3.connect(DB_FILE) as c:
-            c.execute("SELECT review_link FROM restaurants LIMIT 1")
+            c.execute("SELECT 1 FROM restaurants LIMIT 1")
     except sqlite3.OperationalError:
         init_db()
 
@@ -113,23 +119,23 @@ def ensure_schema():
 def store_rows(rows):
     with sqlite3.connect(DB_FILE) as c:
         c.executemany("""
-        INSERT OR IGNORE INTO restaurants
-        (name,address,website,has_prix_fixe,label,raw_text,
-         snippet,review_link,types,location,rating,photo_ref)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT OR IGNORE INTO restaurants
+            (name,address,website,has_prix_fixe,label,raw_text,
+             snippet,review_link,types,location,rating,photo_ref)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows)
 
 
 def fetch_records(loc):
     with sqlite3.connect(DB_FILE) as c:
         return c.execute("""
-        SELECT name,address,website,label,snippet,review_link,
-               types,rating,photo_ref
-        FROM restaurants WHERE has_prix_fixe=1 AND location=?
+            SELECT name,address,website,label,snippet,review_link,
+                   types,rating,photo_ref
+            FROM restaurants WHERE has_prix_fixe=1 AND location=?
         """, (loc,)).fetchall()
 
 
-# ────────────────── acquisition helpers ──────────────────────────────────────
+# ────────────────── acquisition ──────────────────────────────────────────────
 def prioritize(places):
     hits = {"bistro", "brasserie", "trattoria", "tavern",
             "grill", "prix fixe", "pre fixe", "ristorante"}
@@ -141,7 +147,6 @@ def prioritize(places):
 
 def process_place(place, loc):
     name, addr = place["name"], place["vicinity"]
-    # Google often stores a distinct menu URL; use it if present
     web = place.get("website") or place.get("menu_url")
     rating = place.get("rating")
     photo = place.get("photo_ref")
@@ -196,10 +201,6 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     )
 
 
-def label_rank(lbl):
-    return LABEL_ORDER.index(lbl.lower()) if lbl.lower() in LABEL_ORDER else 999
-
-
 # ────────────────── Streamlit page / CSS  ────────────────────────────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown("""
@@ -226,7 +227,7 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 """, unsafe_allow_html=True)
 
 
-# ────────────────── app logic ────────────────────────────────────────────────
+# ────────────────── application logic ────────────────────────────────────────
 ensure_schema()
 
 st.title("The Fixe")
@@ -237,8 +238,7 @@ if st.button("Reset Database"):
 
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
-# deal‑type selector
-deal_options = ["Any deal"] + list(DEAL_GROUPS.keys())
+deal_options = ["Any deal"] + _DISPLAY_ORDER
 selected_deals = st.multiselect("Deal type (optional)",
                                 deal_options,
                                 default=["Any deal"])
@@ -292,7 +292,7 @@ if st.session_state.get("searched"):
                 continue
             grp.setdefault(g, []).append(r)
 
-        for g in sorted(grp.keys(), key=label_rank):
+        for g in sorted(grp.keys(), key=group_rank):
             st.subheader(g)
             cols = st.columns(3)
             for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
