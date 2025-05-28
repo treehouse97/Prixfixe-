@@ -1,31 +1,34 @@
 """
-Crawl helper + pattern detection.
+Crawler / classifier with JavaScript render fallback.
 
-New in this revision
-────────────────────
-1.  Suppress BeautifulSoup XMLParsedAsHTMLWarning (unchanged from last push).
-2.  When the start page doesn’t expose internal <a> links (common on
-    single‑page sites using JS routing), probe a short list of *well‑known*
-    slugs such as  /events, /specials, /weekly‑specials, /wednesday‑specials,
-    /lunch‑specials.  This brings in Popei’s ‘/events’ and similar pages
-    without changing any public API.
+Flow
+────
+1. Static crawl (root page → slug HTMLs → ≤3 PDFs).
+2. If nothing matches any PATTERN, launch headless Chromium with Playwright,
+   render the root page, extract text, and run the regex pass once more.
+
+Public API remains:  fetch_website_text(url)  &  detect_prix_fixe_detailed(text)
 """
 
-import re, warnings
+import re, warnings, contextlib, asyncio
 from urllib.parse import urljoin, urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
-from bs4 import (
-    BeautifulSoup,
-    XMLParsedAsHTMLWarning,
-)
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import fitz  # PyMuPDF
 
-# ─── silence noisy parser warning ────────────────────────────────────────────
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+# ── optional JS renderer (only used if static pass fails) ────────────────────
+with contextlib.suppress(ImportError):
+    from playwright.sync_api import sync_playwright
 
+    _PLAYWRIGHT_AVAILABLE = True
+else:
+    _PLAYWRIGHT_AVAILABLE = False
+
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # ────────────────── keyword patterns (priority order) ───────────────────────
 PATTERNS = {
@@ -50,21 +53,21 @@ LABEL_ORDER = list(PATTERNS.keys())
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# ────────────────── regex helpers ────────────────────────────────────────────
+def _match_label(text: str):
+    for lbl, pattern in PATTERNS.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return lbl
+    return None
 
-# ────────────────── helpers ──────────────────────────────────────────────────
+
+# ────────────────── content fetchers ─────────────────────────────────────────
 def _pdf_bytes_to_text(data: bytes) -> str:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
         return " ".join(page.get_text() for page in doc).lower()
     except Exception:
         return ""
-
-
-def _match_label(text: str):
-    for lbl, pattern in PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return lbl
-    return None
 
 
 def _extract_text_and_match(resp, src_url):
@@ -75,10 +78,8 @@ def _extract_text_and_match(resp, src_url):
         text = _pdf_bytes_to_text(resp.content)
         return text, _match_label(text)
 
-    soup = BeautifulSoup(
-        resp.text,
-        "xml" if ("xml" in ctype or src_url.lower().endswith(".xml")) else "html.parser",
-    )
+    parser = "xml" if ("xml" in ctype or src_url.lower().endswith(".xml")) else "html.parser"
+    soup = BeautifulSoup(resp.text, parser)
 
     text = " ".join(
         t.get_text(" ", strip=True).lower()
@@ -96,7 +97,7 @@ def _safe_fetch_and_match(url):
         return "", None
 
 
-# ────────────────── WordPress PDF fallback ───────────────────────────────────
+# ────────────────── WordPress PDF guess ──────────────────────────────────────
 _PDF_CANDIDATES = [
     "menu.pdf", "fullmenu.pdf", "fullmenu-1.pdf",
     "menu-1.pdf", "specials.pdf", "lunch-specials.pdf",
@@ -115,7 +116,7 @@ def _wordpress_guess_pdfs(root_url: str):
     ][:20]
 
 
-# ────────────────── NEW  –  slug heuristics  ────────────────────────────────
+# ────────────────── slug heuristics ──────────────────────────────────────────
 COMMON_HTML_SLUGS = [
     "events", "events/", "specials", "specials/",
     "weekly-specials", "daily-specials", "wednesday-specials",
@@ -130,15 +131,33 @@ def _heuristic_slug_urls(base_url: str):
     return [f"{root}/{slug}" for slug in COMMON_HTML_SLUGS]
 
 
+# ────────────────── JavaScript render fallback ───────────────────────────────
+def _render_page_text(url: str, timeout: int = 15000) -> str:
+    if not _PLAYWRIGHT_AVAILABLE:
+        return ""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(url, timeout=timeout, wait_until="networkidle")
+            html = page.content()
+            browser.close()
+            soup = BeautifulSoup(html, "html.parser")
+            return soup.get_text(" ", strip=True).lower()
+        except Exception:
+            browser.close()
+            return ""
+
+
 # ────────────────── public API ───────────────────────────────────────────────
 def fetch_website_text(url: str) -> str:
     """
-    Crawl *url* plus internal HTML/PDF links (≤3 PDFs).  
-    If initial HTML exposes no internal <a> links (JS nav), probe a short
-    list of common slug pages ( /events, /specials,… ).  
-    WordPress “uploads/*menu*.pdf” probing is retained.
+    Crawl *url* plus discovered HTML/PDF links (≤3 PDFs).
+    If no pattern matches, render root page with Playwright (one shot) and
+    check again.
     """
     visited, collected = set(), ""
+    label_found = None
 
     try:
         base = requests.get(url, headers=HEADERS, timeout=10)
@@ -146,8 +165,9 @@ def fetch_website_text(url: str) -> str:
     except Exception:
         return collected
 
-    base_text, _ = _extract_text_and_match(base, url)
+    base_text, hit = _extract_text_and_match(base, url)
     collected += base_text
+    label_found = hit or label_found
 
     soup = BeautifulSoup(base.text, "html.parser")
     base_dom = urlparse(url).netloc
@@ -160,23 +180,30 @@ def fetch_website_text(url: str) -> str:
         visited.add(link)
         (pdf_links if link.lower().endswith(".pdf") else html_links).append(link)
 
-    # no traditional links? – try heuristic slug pages
     if not html_links and not pdf_links:
         html_links.extend(_heuristic_slug_urls(url))
 
-    # WordPress blank‑site PDF probe
     if not html_links and not pdf_links and "wp-content" not in url:
         pdf_links.extend(_wordpress_guess_pdfs(url))
 
-    pdf_links = pdf_links[:3]                         # speed cap
-    link_queue = pdf_links + html_links               # PDFs first
+    pdf_links = pdf_links[:3]
+    link_queue = pdf_links + html_links
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {ex.submit(_safe_fetch_and_match, l): l for l in link_queue}
         for fut in as_completed(futures):
-            sub_text, _ = fut.result()
+            sub_text, hit = fut.result()
             if sub_text:
                 collected += " " + sub_text
+            if hit and label_found is None:
+                label_found = hit
+
+    # ── JS render fallback (only if we still have no label) ──────────────────
+    if label_found is None and _PLAYWRIGHT_AVAILABLE:
+        rendered = _render_page_text(url)
+        if rendered:
+            collected += " " + rendered
+            label_found = _match_label(rendered)
 
     return collected.strip()
 
