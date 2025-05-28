@@ -17,11 +17,10 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import (
-    fetch_website_text,
+from scraper import 
+    (fetch_website_text,
     detect_prix_fixe_detailed,
-    PATTERNS,
-)
+    PATTERNS,)
 
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
