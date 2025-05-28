@@ -1,6 +1,3 @@
-# streamlit_app.py
-# Complete drop‑in replacement.  Copy ↔ paste, then restart the app.
-
 import json, os, re, sqlite3, tempfile, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -8,7 +5,12 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
+from scraper import (
+    fetch_website_text,
+    detect_prix_fixe_detailed,
+    PATTERNS,
+    LABEL_ORDER,        # ← now imported from scraper
+)
 from places_api import text_search_restaurants, place_details
 from settings import GOOGLE_API_KEY
 
@@ -55,18 +57,18 @@ DEAL_GROUPS = {
     "Prix Fixe":     {"prix fixe", "pre fixe", "price fixed"},
     "Lunch Special": {"lunch special", "complete lunch"},
     "Specials":      {"specials", "special menu", "weekly special"},
-    "Fixed Menu":    {"fixed menu", "tasting menu", "multi-course", "3-course"},
+    "Fixed Menu":    {"fixed menu", "set menu", "tasting menu",  # ← added “set menu”
+                      "multi-course", "3-course"},
     "Deals":         {"combo deal", "value menu", "deals"},
 }
 
 
 def canonical_group(label: str) -> str:
-    """Map any free‑form label to a canonical deal group."""
     l = label.lower()
     for g, syn in DEAL_GROUPS.items():
-        if any(s in l for s in syn):          # substring match
+        if any(s in l for s in syn):
             return g
-    return label.title()                      # fallback (rare)
+    return label.title()
 
 
 # ────────────────── per‑session database ─────────────────────────────────────
@@ -76,7 +78,6 @@ if "db_file" not in st.session_state:
     st.session_state["searched"] = False
 
 DB_FILE = st.session_state["db_file"]
-LABEL_ORDER = list(PATTERNS.keys())
 
 SCHEMA = """
 CREATE TABLE restaurants (
@@ -128,7 +129,7 @@ def fetch_records(loc):
         """, (loc,)).fetchall()
 
 
-# ────────────────── acquisition ──────────────────────────────────────────────
+# ────────────────── acquisition helpers ──────────────────────────────────────
 def prioritize(places):
     hits = {"bistro", "brasserie", "trattoria", "tavern",
             "grill", "prix fixe", "pre fixe", "ristorante"}
@@ -140,7 +141,8 @@ def prioritize(places):
 
 def process_place(place, loc):
     name, addr = place["name"], place["vicinity"]
-    web = place.get("website")
+    # Google often stores a distinct menu URL; use it if present
+    web = place.get("website") or place.get("menu_url")
     rating = place.get("rating")
     photo = place.get("photo_ref")
     pid = place.get("place_id")
@@ -180,7 +182,6 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
                   if snippet else "")
     rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
 
-    # single concatenated string → no stray newlines before inline tags
     return (
         '<div class="card">' + photo_tag +
         '<div class="body">'
@@ -260,7 +261,7 @@ def run_search(limit):
 
     try:
         raw = text_search_restaurants(location)
-        cand = prioritize([p for p in raw if p.get("website")])
+        cand = prioritize([p for p in raw if p.get("website") or p.get("menu_url")])
         if limit:
             cand = cand[:limit]
         with ThreadPoolExecutor(max_workers=10) as ex:
@@ -291,7 +292,7 @@ if st.session_state.get("searched"):
                 continue
             grp.setdefault(g, []).append(r)
 
-        for g in sorted(grp.keys()):
+        for g in sorted(grp.keys(), key=label_rank):
             st.subheader(g)
             cols = st.columns(3)
             for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
