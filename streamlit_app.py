@@ -17,17 +17,15 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import (
-    fetch_website_text,
-    detect_prix_fixe_detailed,
-    PATTERNS,
-)
+# --- single‑line import: no parentheses, no trailing commas ---
+from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
+# --------------------------------------------------------------
 
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
 
-# ───────────── logging ─────────────
+# ----------------------- logging ------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="TheFixe DEBUG >> %(message)s",
@@ -35,7 +33,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("the_fixe")
 
-# ─────────── deal groups ───────────
+# ------------------- deal groups ------------------------------
 DEAL_GROUPS = {
     "Prix Fixe": {
         "prix fixe",
@@ -66,7 +64,7 @@ def group_rank(g: str) -> int:
     return DISPLAY_ORDER.index(g) if g in DISPLAY_ORDER else len(DISPLAY_ORDER)
 
 
-# ─────────── helpers ───────────
+# -------------------- helpers ------------------------------
 def safe_rerun():
     (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
@@ -111,7 +109,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# ─────────── session DB ───────────
+# ---------------- session DB -----------------
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -182,7 +180,7 @@ def fetch_records(loc):
         ).fetchall()
 
 
-# ───────── acquisition ─────────
+# ---------------- acquisition ----------------
 def prioritize(places):
     hits = {
         "bistro",
@@ -253,7 +251,7 @@ def process_place(place, loc):
     return None
 
 
-# ───────── build card ─────────
+# --------------- card builder ----------------
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(
         f'<span class="chip">{t}</span>'
@@ -290,7 +288,7 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     )
 
 
-# ───────── CSS & page ─────────
+# -------------- CSS & page ------------------
 st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown(
     """
@@ -326,7 +324,7 @@ html,body,[data-testid="stAppViewContainer"]{
     unsafe_allow_html=True,
 )
 
-# ───────── app logic ─────────
+# --------------- app logic -------------------
 ensure_schema()
 
 st.title("The Fixe")
