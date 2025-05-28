@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-The Fixe – Streamlit UI layer
+The Fixe – Streamlit UI
 """
 
-import logging
 import json
 import os
 import re
@@ -11,24 +10,24 @@ import sqlite3
 import tempfile
 import time
 import uuid
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-from scraper import (  # ← ALL identifiers below need commas, final one too!
+from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
     PATTERNS,
-)  # ← nothing (not even a comment) after this parenthesis
-# -----------------------------------------------------------------------------
-
+)
 
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
-# ------------------------------- logging -------------------------------------
+
+# ───────────── logging ─────────────
 logging.basicConfig(
     level=logging.INFO,
     format="TheFixe DEBUG >> %(message)s",
@@ -36,7 +35,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("the_fixe")
 
-# ------------------------- deal groups & order ------------------------------
+# ─────────── deal groups ───────────
 DEAL_GROUPS = {
     "Prix Fixe": {
         "prix fixe",
@@ -57,8 +56,8 @@ DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
 
 def canonical_group(label: str) -> str:
     low = label.lower()
-    for g, synonyms in DEAL_GROUPS.items():
-        if any(s in low for s in synonyms):
+    for g, syn in DEAL_GROUPS.items():
+        if any(s in low for s in syn):
             return g
     return label.title()
 
@@ -67,12 +66,9 @@ def group_rank(g: str) -> int:
     return DISPLAY_ORDER.index(g) if g in DISPLAY_ORDER else len(DISPLAY_ORDER)
 
 
-# ------------------------------ helpers --------------------------------------
+# ─────────── helpers ───────────
 def safe_rerun():
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        st.experimental_rerun()
+    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 
 
 def clean_utf8(s: str) -> str:
@@ -81,8 +77,8 @@ def clean_utf8(s: str) -> str:
 
 def load_lottie(path: str):
     try:
-        with open(path, "r", encoding="utf-8") as fp:
-            return json.load(fp)
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
     except FileNotFoundError:
         return None
 
@@ -103,8 +99,8 @@ def nice_types(tp: List[str]) -> List[str]:
 
 def first_review(pid: str) -> str:
     try:
-        reviews = place_details(pid).get("reviews") or []
-        txt = reviews[0].get("text", "") if reviews else ""
+        revs = place_details(pid).get("reviews") or []
+        txt = revs[0].get("text", "") if revs else ""
         txt = re.sub(r"\s+", " ", txt).strip()
         return (txt[:100] + "…") if len(txt) > 100 else txt
     except Exception:
@@ -115,7 +111,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# ---------------------------- session DB -------------------------------------
+# ─────────── session DB ───────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -186,7 +182,7 @@ def fetch_records(loc):
         ).fetchall()
 
 
-# ---------------------- acquisition & processing ----------------------------
+# ───────── acquisition ─────────
 def prioritize(places):
     hits = {
         "bistro",
@@ -208,7 +204,7 @@ def prioritize(places):
 
 def process_place(place, loc):
     name, addr = place["name"], place["vicinity"]
-    website = place.get("website") or place.get("menu_url")
+    web = place.get("website") or place.get("menu_url")
     rating = place.get("rating")
     photo = place.get("photo_ref")
     pid = place.get("place_id")
@@ -222,16 +218,16 @@ def process_place(place, loc):
             log.info("%s • skipped (already processed)", name)
             return None
 
-    if not website:
+    if not web:
         log.info("%s • skipped (no website / menu URL)", name)
         return None
 
     try:
-        text = clean_utf8(fetch_website_text(website))
+        text = clean_utf8(fetch_website_text(web))
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
-            trig = re.search(PATTERNS[lbl], text, re.IGNORECASE)
-            trigger = trig.group(0) if trig else lbl
+            m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
+            trigger = m.group(0) if m else lbl
             log.info("%s • triggered by '%s' → %s", name, trigger, lbl)
 
             snippet = first_review(pid)
@@ -240,7 +236,7 @@ def process_place(place, loc):
             return (
                 name,
                 addr,
-                website,
+                web,
                 1,
                 lbl,
                 text,
@@ -257,7 +253,7 @@ def process_place(place, loc):
     return None
 
 
-# ---------------------------- card builder -----------------------------------
+# ───────── build card ─────────
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(
         f'<span class="chip">{t}</span>'
@@ -294,7 +290,7 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     )
 
 
-# ------------------------------ CSS & page -----------------------------------
+# ───────── CSS & page ─────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown(
     """
@@ -330,7 +326,7 @@ html,body,[data-testid="stAppViewContainer"]{
     unsafe_allow_html=True,
 )
 
-# ---------------------------- app workflow -----------------------------------
+# ───────── app logic ─────────
 ensure_schema()
 
 st.title("The Fixe")
@@ -390,29 +386,19 @@ if st.button("Search"):
     run_search(limit=25)
 
 if st.session_state.get("searched", False):
-    records = fetch_records(location)
-    if records:
+    recs = fetch_records(location)
+    if recs:
         grouped = {}
-        for rec in records:
-            g = canonical_group(rec[3])
+        for r in recs:
+            g = canonical_group(r[3])
             if want_group(g):
-                grouped.setdefault(g, []).append(rec)
+                grouped.setdefault(g, []).append(r)
 
         for g in sorted(grouped.keys(), key=group_rank):
             st.subheader(g)
             cols = st.columns(3)
-            for idx, (
-                n,
-                a,
-                w,
-                _,
-                snip,
-                lnk,
-                typ,
-                rating,
-                photo,
-            ) in enumerate(grouped[g]):
-                with cols[idx % 3]:
+            for i, (n, a, w, _, snip, lnk, typ, rating, photo) in enumerate(grouped[g]):
+                with cols[i % 3]:
                     st.markdown(
                         build_card(n, a, w, g, snip, lnk, typ, rating, photo),
                         unsafe_allow_html=True,
