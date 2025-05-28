@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 """
-The Fixe — Streamlit UI layer
-(ASCII‑only header; parses on any Python 3.x)
+The Fixe – Streamlit UI layer
 """
 
+import logging
 import json
 import os
 import re
@@ -10,19 +11,17 @@ import sqlite3
 import tempfile
 import time
 import uuid
-import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-# ---- core crawler functions -------------------------------------------------
-from scraper import (
+from scraper import (  # ← ALL identifiers below need commas, final one too!
     fetch_website_text,
     detect_prix_fixe_detailed,
     PATTERNS,
-)
+)  # ← nothing (not even a comment) after this parenthesis
 # -----------------------------------------------------------------------------
 
 
