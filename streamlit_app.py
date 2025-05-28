@@ -1,12 +1,6 @@
 """
 The Fixe — Streamlit UI layer
-
-• groups:  Prix Fixe → Lunch Special → Specials → Deals
-• full accept / skip diagnostics printed to stdout
-• relies on scraper.fetch_website_text (static + JS‑render fallback)
-
-This file is *pure Python/ASCII*; avoid curved quotes or exotic dashes so it
-compiles on every 3.x interpreter.
+(ASCII‑only header; parses on any Python 3.x)
 """
 
 import json
@@ -23,29 +17,27 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
+# ---- core crawler functions -------------------------------------------------
 from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
-    PATTERNS,  # needed for debug messages
+    PATTERNS,
 )
+# -----------------------------------------------------------------------------
+
+
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
-# --------------------------------------------------------------------------- #
-#  Logging                                                                    #
-# --------------------------------------------------------------------------- #
-
+# ------------------------------- logging -------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="TheFixe DEBUG >> %(message)s",
-    force=True,  # overwrite any existing basicConfig in host env
+    force=True,
 )
 log = logging.getLogger("the_fixe")
 
-# --------------------------------------------------------------------------- #
-#  Deal groups and display order                                              #
-# --------------------------------------------------------------------------- #
-
+# ------------------------- deal groups & order ------------------------------
 DEAL_GROUPS = {
     "Prix Fixe": {
         "prix fixe",
@@ -76,13 +68,8 @@ def group_rank(g: str) -> int:
     return DISPLAY_ORDER.index(g) if g in DISPLAY_ORDER else len(DISPLAY_ORDER)
 
 
-# --------------------------------------------------------------------------- #
-#  Convenience helpers                                                        #
-# --------------------------------------------------------------------------- #
-
-
+# ------------------------------ helpers --------------------------------------
 def safe_rerun():
-    """Run‑time compatible rerun helper (Streamlit API changed once)."""
     if hasattr(st, "rerun"):
         st.rerun()
     else:
@@ -90,13 +77,13 @@ def safe_rerun():
 
 
 def clean_utf8(s: str) -> str:
-    return s.encode("utf‑8", "ignore").decode("utf‑8", "ignore")
+    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
 def load_lottie(path: str):
     try:
-        with open(path, "r", encoding="utf‑8") as fh:
-            return json.load(fh)
+        with open(path, "r", encoding="utf-8") as fp:
+            return json.load(fp)
     except FileNotFoundError:
         return None
 
@@ -118,9 +105,9 @@ def nice_types(tp: List[str]) -> List[str]:
 def first_review(pid: str) -> str:
     try:
         reviews = place_details(pid).get("reviews") or []
-        text = reviews[0].get("text", "") if reviews else ""
-        text = re.sub(r"\s+", " ", text).strip()
-        return (text[:100] + "…") if len(text) > 100 else text
+        txt = reviews[0].get("text", "") if reviews else ""
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return (txt[:100] + "…") if len(txt) > 100 else txt
     except Exception:
         return ""
 
@@ -129,10 +116,7 @@ def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
 
-# --------------------------------------------------------------------------- #
-#  In‑memory DB (one file per Streamlit session)                              #
-# --------------------------------------------------------------------------- #
-
+# ---------------------------- session DB -------------------------------------
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -203,11 +187,7 @@ def fetch_records(loc):
         ).fetchall()
 
 
-# --------------------------------------------------------------------------- #
-#  Acquisition logic                                                          #
-# --------------------------------------------------------------------------- #
-
-
+# ---------------------- acquisition & processing ----------------------------
 def prioritize(places):
     hits = {
         "bistro",
@@ -248,12 +228,11 @@ def process_place(place, loc):
         return None
 
     try:
-        text = fetch_website_text(website)
-        text = clean_utf8(text)
+        text = clean_utf8(fetch_website_text(website))
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
-            match_obj = re.search(PATTERNS[lbl], text, re.IGNORECASE)
-            trigger = match_obj.group(0) if match_obj else lbl
+            trig = re.search(PATTERNS[lbl], text, re.IGNORECASE)
+            trigger = trig.group(0) if trig else lbl
             log.info("%s • triggered by '%s' → %s", name, trigger, lbl)
 
             snippet = first_review(pid)
@@ -279,11 +258,7 @@ def process_place(place, loc):
     return None
 
 
-# --------------------------------------------------------------------------- #
-#  UI helpers                                                                 #
-# --------------------------------------------------------------------------- #
-
-
+# ---------------------------- card builder -----------------------------------
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(
         f'<span class="chip">{t}</span>'
@@ -298,8 +273,8 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
         else ""
     )
     snippet_ht = (
-        f'<p class="snippet">💬 {snippet} <a href="{link}" target="_blank">'
-        "Read&nbsp;more</a></p>"
+        f'<p class="snippet">💬 {snippet} '
+        f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
         if snippet
         else ""
     )
@@ -320,33 +295,23 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     )
 
 
-# --------------------------------------------------------------------------- #
-#  Streamlit page & CSS                                                       #
-# --------------------------------------------------------------------------- #
-
+# ------------------------------ CSS & page -----------------------------------
 st.set_page_config("The Fixe", "🍽", layout="wide")
-
 st.markdown(
     """
 <style>
 html,body,[data-testid="stAppViewContainer"]{
-  background:#f8f9fa!important;
-  color:#111!important;
+  background:#f8f9fa!important;color:#111!important;
 }
 .stButton>button{
-  background:#212529!important;
-  color:#fff!important;
-  border-radius:4px!important;
-  font-weight:600!important;
+  background:#212529!important;color:#fff!important;
+  border-radius:4px!important;font-weight:600!important;
 }
 .stButton>button:hover{background:#343a40!important;}
 .stTextInput input{
-  background:#fff!important;
-  color:#111!important;
+  background:#fff!important;color:#111!important;
   border:1px solid #ced4da!important;
 }
-
-/* cards */
 .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);
       overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
@@ -366,10 +331,7 @@ html,body,[data-testid="stAppViewContainer"]{
     unsafe_allow_html=True,
 )
 
-# --------------------------------------------------------------------------- #
-#  Application logic                                                          #
-# --------------------------------------------------------------------------- #
-
+# ---------------------------- app workflow -----------------------------------
 ensure_schema()
 
 st.title("The Fixe")
@@ -382,7 +344,9 @@ if st.button("Reset Database"):
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 
 deal_options = ["Any deal"] + DISPLAY_ORDER
-selected_deals = st.multiselect("Deal type (optional)", deal_options, default=["Any deal"])
+selected_deals = st.multiselect(
+    "Deal type (optional)", deal_options, default=["Any deal"]
+)
 
 
 def want_group(g: str) -> bool:
@@ -429,11 +393,11 @@ if st.button("Search"):
 if st.session_state.get("searched", False):
     records = fetch_records(location)
     if records:
-        grouped: dict[str, list] = {}
+        grouped = {}
         for rec in records:
-            group = canonical_group(rec[3])
-            if want_group(group):
-                grouped.setdefault(group, []).append(rec)
+            g = canonical_group(rec[3])
+            if want_group(g):
+                grouped.setdefault(g, []).append(rec)
 
         for g in sorted(grouped.keys(), key=group_rank):
             st.subheader(g)
