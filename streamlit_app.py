@@ -1,3 +1,11 @@
+"""
+UI layer + logging.
+
+Only difference from the previous version:
+  * import path for PATTERNS now comes from the updated scraper.
+Everything else (deal order, DB schema, debug lines) remains intact.
+"""
+
 import json, os, re, sqlite3, tempfile, time, uuid, logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -8,7 +16,7 @@ from streamlit_lottie import st_lottie
 from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
-    PATTERNS,
+    PATTERNS,          # ← unchanged import but now XML‑aware parser below
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
@@ -18,7 +26,7 @@ from places_api import text_search_restaurants, place_details
 logging.basicConfig(
     level=logging.INFO,
     format="The Fixe DEBUG » %(message)s",
-    force=True,            # overwrite any existing basicConfig in host
+    force=True,
 )
 log = logging.getLogger("prix_fixe_debug")
 
@@ -317,7 +325,6 @@ def run_search(limit):
     try:
         raw = text_search_restaurants(location)
 
-        # ── filter while logging skipped entries with no website/menu URL ────
         cand = []
         for p in raw:
             if p.get("website") or p.get("menu_url"):
