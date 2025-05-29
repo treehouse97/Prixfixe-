@@ -6,7 +6,3 @@ PyMuPDF
 streamlit-lottie
 streamlit-js-eval
 PyPDF2
-fitz
-pdf2image
-pytesseract
-pillow
