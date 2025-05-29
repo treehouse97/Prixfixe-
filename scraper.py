@@ -1,11 +1,14 @@
-# scraper.py
-import re, warnings
+import re, warnings, io
 from urllib.parse import urljoin, urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+
 import requests
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import fitz  # PyMuPDF
+from pdf2image import convert_from_bytes
+from PIL import Image
+import pytesseract
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -15,6 +18,7 @@ PATTERNS = {
     "price fixed":    r"price[\s\-]*fixed",
     "set menu":       r"set[\s\-]*menu",
     "3-course":       r"(three|3)[\s\-]*(course|courses)",
+    "three course":   r"\b(three|3)\b.*?\bcourses?\b",
     "multi-course":   r"\d+\s*course\s*meal",
     "fixed menu":     r"(fixed|set)[\s\-]*(menu|meal)",
     "tasting menu":   r"tasting\s*menu",
@@ -25,15 +29,15 @@ PATTERNS = {
     "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
     "combo deal":     r"(combo|combination)\s*(deal|meal|menu)",
     "value menu":     r"value\s*(menu|deal|offer)",
+    "per guest":      r"\$\d+\s*(per|/)\s*(person|guest)",
     "deals":          r"\bdeals?\b",
 }
+
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-
 _HTML_GUESS_PATHS = [
-    "events", "specials", "menu", "menus",
-    "deals", "offers", "wednesday-specials", "lunch-specials",
+    "events", "specials", "menu", "menus", "deals", "offers",
+    "wednesday-specials", "lunch-specials",
 ]
-
 _PDF_DIRS = ["", "images", "pdf", "menus"]
 _PDF_NAMES = [
     "menu.pdf", "specials.pdf", "lunch-specials.pdf",
@@ -43,8 +47,18 @@ _PDF_NAMES = [
 def _pdf_bytes_to_text(data: bytes) -> str:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
-        return " ".join(p.get_text() for p in doc).lower()
-    except Exception:
+        text = " ".join(p.get_text() for p in doc).strip()
+        if text:
+            return text.lower()
+
+        # fallback to OCR
+        images = convert_from_bytes(data)
+        ocr_text = ""
+        for img in images:
+            ocr_text += pytesseract.image_to_string(img)
+        return ocr_text.lower()
+    except Exception as e:
+        print(f"[ERROR] PDF text extraction failed: {e}")
         return ""
 
 def _match_label(text: str):
@@ -57,13 +71,13 @@ def _extract_text_and_match(resp, src_url):
     ctype = resp.headers.get("content-type", "").lower()
     if "pdf" in ctype or src_url.lower().endswith(".pdf"):
         text = _pdf_bytes_to_text(resp.content)
-    else:
-        parser = "xml" if "xml" in ctype or src_url.endswith(".xml") else "html.parser"
-        soup = BeautifulSoup(resp.text, parser)
-        text = " ".join(
-            el.get_text(" ", strip=True).lower()
-            for el in soup.find_all(["h1", "h2", "h3", "p", "li", "div", "span", "section", "article", "a"])
-        )
+        print(f"[DEBUG] Extracted PDF text from {src_url}:\n{text[:500]}")
+        return text, _match_label(text)
+
+    parser = "xml" if "xml" in ctype or src_url.endswith(".xml") else "html.parser"
+    soup = BeautifulSoup(resp.text, parser)
+    TAGS = ["h1", "h2", "h3", "p", "li", "div", "span", "section", "article", "a"]
+    text = " ".join(t.get_text(" ", strip=True).lower() for t in soup.find_all(TAGS))
     return text, _match_label(text)
 
 def _safe_fetch_and_match(url):
@@ -121,7 +135,6 @@ def fetch_website_text(url: str) -> str:
         visited.add(link)
         (pdf_links if link.lower().endswith(".pdf") else html_links).append(link)
 
-    # Add synthetic fallback links
     html_links += [l for l in _guess_html_pages(url) if l not in visited]
     pdf_links += _wordpress_pdfs(url) + _guess_pdfs(url)
     pdf_links = list(dict.fromkeys(pdf_links))[:3]  # dedupe + cap
