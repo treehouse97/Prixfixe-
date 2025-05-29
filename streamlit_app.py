@@ -110,7 +110,7 @@ def insert_user_suggestion(name, address, website, deal_type, notes):
 st.set_page_config("The Fixe", "🍽", layout="wide")
 
 st.markdown(
-    \"\"\"<style>
+    """<style>
 html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
 .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
 .stButton>button:hover{background:#343a40!important;}
