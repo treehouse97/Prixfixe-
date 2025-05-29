@@ -13,7 +13,6 @@ from scraper import (
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
-# ─────────────── Setup ─────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="The Fixe DEBUG » %(message)s",
@@ -43,7 +42,6 @@ def canonical_group(label: str) -> str:
 def group_rank(g: str) -> int:
     return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
 
-# ─────────────── DB and State ─────────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -106,11 +104,8 @@ def insert_user_suggestion(name, address, website, deal_type, notes):
             (name, address, website, deal_type, notes)
         )
 
-# ─────────────── Streamlit UI ─────────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
-
-st.markdown(
-    """<style>
+st.markdown("""<style>
 html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
 .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
 .stButton>button:hover{background:#343a40!important;}
@@ -128,31 +123,9 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
        padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
-</style>""",
-    unsafe_allow_html=True
-)
+</style>""", unsafe_allow_html=True)
 
 st.title("The Fixe")
-
-# ─────────────── Suggestion Form ─────────────────
-st.markdown("## Suggest a Restaurant or Tag a Deal")
-with st.form("user_suggestion_form"):
-    name = st.text_input("Restaurant Name", "")
-    address = st.text_input("Address (optional)", "")
-    website = st.text_input("Website URL (optional)", "")
-    deal_type = st.selectbox(
-        "Deal Type (optional)",
-        ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
-    )
-    notes = st.text_area("Additional Notes (optional)")
-    submitted = st.form_submit_button("Submit Suggestion")
-
-if submitted and name.strip():
-    insert_user_suggestion(name.strip(), address.strip(), website.strip(), deal_type.strip(), notes.strip())
-    st.success("Thank you! Your suggestion has been recorded.")
-
-# (continued below: admin panel and original search logic)
-# ─────────────── Search + Deal Logic (original) ─────────────────
 def store_rows(rows):
     with sqlite3.connect(DB_FILE) as c:
         c.executemany(
@@ -176,15 +149,11 @@ def fetch_records(loc):
             (loc,),
         ).fetchall()
 
-def safe_rerun():
-    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
-
 def clean_utf8(s: str) -> str:
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
-def nice_types(tp: List[str]) -> List[str]:
-    banned = {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}
-    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
+def review_link(pid: str) -> str:
+    return f"https://search.google.com/local/reviews?placeid={pid}"
 
 def first_review(pid: str) -> str:
     try:
@@ -195,8 +164,9 @@ def first_review(pid: str) -> str:
     except Exception:
         return ""
 
-def review_link(pid: str) -> str:
-    return f"https://search.google.com/local/reviews?placeid={pid}"
+def nice_types(tp: List[str]) -> List[str]:
+    banned = {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}
+    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(f'<span class="chip">{t}</span>' for t in (types_txt.split(", ") if types_txt else []))
@@ -248,7 +218,7 @@ def run_search(limit):
         with anim.container():
             st_lottie(done, height=260, key=f"done-{time.time()}")
 
-# UI inputs
+# ─── Main Search UI ───
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 deal_options = ["Any deal"] + _DISPLAY_ORDER
 selected_deals = st.multiselect("Deal type (optional)", deal_options, default=["Any deal"])
@@ -278,9 +248,11 @@ if st.session_state.get("searched"):
             if st.button("Expand Search"):
                 st.session_state["expanded"] = True
                 run_search(limit=None)
-                safe_rerun()
+                st.rerun()
     else:
         st.info("No prix fixe menus stored yet for this location.")
+
+# ─── Suggestion Form (Moved Below) ───
 st.markdown("---")
 st.subheader("💬 Know a restaurant we missed?")
 st.markdown("You can optionally suggest a new restaurant or tag a deal below.")
@@ -290,12 +262,8 @@ with st.expander("Suggest a Restaurant or Tag a Deal"):
         name = st.text_input("Restaurant Name (required)")
         address = st.text_input("Street Address or Neighborhood")
         website = st.text_input("Website URL (optional)")
-        deal_type = st.selectbox(
-            "Deal Type",
-            ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
-        )
+        deal_type = st.selectbox("Deal Type", ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"])
         notes = st.text_area("Any additional context (optional)")
-
         submitted = st.form_submit_button("Submit Suggestion")
 
     if submitted and name.strip():
@@ -303,11 +271,12 @@ with st.expander("Suggest a Restaurant or Tag a Deal"):
         st.success("✅ Thank you! Your suggestion has been recorded.")
     elif submitted:
         st.error("Please enter the restaurant name.")
-# ─────────────── Admin Panel ─────────────────
+
+# ─── Admin Panel ───
 st.markdown("---")
 st.header("🛠 Review Suggested Restaurants (Admin Only)")
-
 admin_pw = st.text_input("Enter admin password", type="password")
+
 if admin_pw == "your-secure-password":
     with sqlite3.connect(DB_FILE) as c:
         suggestions = c.execute("SELECT id, name, address, website, deal_type, notes FROM user_suggestions").fetchall()
@@ -336,10 +305,8 @@ if admin_pw == "your-secure-password":
                         )
                         c.execute("DELETE FROM user_suggestions WHERE id=?", (sid,))
                     st.success(f"Approved {new_name}")
-                    safe_rerun()
+                    st.rerun()
     else:
         st.info("No pending suggestions.")
 else:
     st.warning("Enter password to access the admin panel.")
-
-
