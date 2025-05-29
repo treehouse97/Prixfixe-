@@ -281,7 +281,28 @@ if st.session_state.get("searched"):
                 safe_rerun()
     else:
         st.info("No prix fixe menus stored yet for this location.")
+st.markdown("---")
+st.subheader("💬 Know a restaurant we missed?")
+st.markdown("You can optionally suggest a new restaurant or tag a deal below.")
 
+with st.expander("Suggest a Restaurant or Tag a Deal"):
+    with st.form("user_suggestion_form"):
+        name = st.text_input("Restaurant Name (required)")
+        address = st.text_input("Street Address or Neighborhood")
+        website = st.text_input("Website URL (optional)")
+        deal_type = st.selectbox(
+            "Deal Type",
+            ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
+        )
+        notes = st.text_area("Any additional context (optional)")
+
+        submitted = st.form_submit_button("Submit Suggestion")
+
+    if submitted and name.strip():
+        insert_user_suggestion(name.strip(), address.strip(), website.strip(), deal_type.strip(), notes.strip())
+        st.success("✅ Thank you! Your suggestion has been recorded.")
+    elif submitted:
+        st.error("Please enter the restaurant name.")
 # ─────────────── Admin Panel ─────────────────
 st.markdown("---")
 st.header("🛠 Review Suggested Restaurants (Admin Only)")
