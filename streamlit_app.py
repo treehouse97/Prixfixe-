@@ -262,8 +262,12 @@ with st.expander("Suggest a Restaurant or Tag a Deal"):
         name = st.text_input("Restaurant Name (required)")
         address = st.text_input("Street Address or Neighborhood")
         website = st.text_input("Website URL (optional)")
-        deal_type = st.selectbox("Deal Type", ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"])
+        deal_type = st.selectbox(
+            "Deal Type",
+            ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
+        )
         notes = st.text_area("Any additional context (optional)")
+
         submitted = st.form_submit_button("Submit Suggestion")
 
     if submitted and name.strip():
