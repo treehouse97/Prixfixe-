@@ -259,14 +259,22 @@ st.markdown("You can optionally suggest a new restaurant or tag a deal below.")
 
 with st.expander("Suggest a Restaurant or Tag a Deal"):
     with st.form("user_suggestion_form"):
-        name = st.text_input("Restaurant Name (required)")
-        address = st.text_input("Street Address or Neighborhood")
-        website = st.text_input("Website URL (optional)")
+        st.markdown("**Restaurant Name**")
+        name = st.text_input("Restaurant Name (required)", label_visibility="collapsed")
+
+        st.markdown("**Street Address or Neighborhood**")
+        address = st.text_input("Address", label_visibility="collapsed")
+
+        st.markdown("**Website URL (optional)**")
+        website = st.text_input("Website", label_visibility="collapsed")
+
+        st.markdown("**Deal Type**")
         deal_type = st.selectbox(
-            "Deal Type",
-            ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
+            "", ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
         )
-        notes = st.text_area("Any additional context (optional)")
+
+        st.markdown("**Any additional context (optional)**")
+        notes = st.text_area("Additional Notes", label_visibility="collapsed")
 
         submitted = st.form_submit_button("Submit Suggestion")
 
