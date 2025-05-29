@@ -115,7 +115,6 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
 .stButton>button:hover{background:#343a40!important;}
 .stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
-
 .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
 .card img{width:100%;height:180px;object-fit:cover}
 .body{padding:12px 16px}
@@ -129,7 +128,9 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
        padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
-</style>\"\"\", unsafe_allow_html=True)
+</style>""",
+    unsafe_allow_html=True
+)
 
 st.title("The Fixe")
 
