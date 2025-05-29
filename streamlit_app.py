@@ -383,3 +383,91 @@ if st.session_state.get("searched"):
                 safe_rerun()
     else:
         st.info("No prix fixe menus stored yet for this location.")
+        # ───────────── Suggest a Restaurant Section ─────────────
+st.markdown("---")
+st.subheader("💬 Know a restaurant we missed?")
+st.markdown("You can optionally suggest a new restaurant or tag a deal below.")
+
+with st.expander("Suggest a Restaurant or Tag a Deal"):
+    with st.form("user_suggestion_form"):
+        st.markdown("**Restaurant Name**")
+        name = st.text_input("Restaurant Name (required)", label_visibility="collapsed")
+
+        st.markdown("**Street Address or Neighborhood**")
+        address = st.text_input("Address", label_visibility="collapsed")
+
+        st.markdown("**Website URL (optional)**")
+        website = st.text_input("Website", label_visibility="collapsed")
+
+        st.markdown("**Deal Type**")
+        deal_type = st.selectbox(
+            "", ["", "Prix Fixe", "Lunch Special", "Specials", "Combo Deal", "Other"]
+        )
+
+        st.markdown("**Any additional context (optional)**")
+        notes = st.text_area("Notes", label_visibility="collapsed")
+
+        submitted = st.form_submit_button("Submit Suggestion")
+
+    if submitted and name.strip():
+        insert_user_suggestion(name.strip(), address.strip(), website.strip(), deal_type.strip(), notes.strip())
+        st.success("✅ Thank you! Your suggestion has been recorded.")
+    elif submitted:
+        st.error("Please enter the restaurant name.")
+
+# Add white text to submit button (override default)
+st.markdown("""
+<style>
+button[kind="primary"] {
+    color: white !important;
+}
+.stTextInput input, .stTextArea textarea, .stSelectbox select {
+    color: black !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ───────────── Admin Panel ─────────────
+st.markdown("---")
+st.header("🛠 Review Suggested Restaurants (Admin Only)")
+
+with st.form("admin_login"):
+    password = st.text_input("Enter admin password", type="password")
+    auth = st.form_submit_button("Enter")
+
+if auth and password == "frog":
+    with sqlite3.connect(DB_FILE) as c:
+        suggestions = c.execute("SELECT id, name, address, website, deal_type, notes FROM user_suggestions").fetchall()
+
+    if suggestions:
+        st.markdown("### Pending Suggestions")
+        for sid, name, addr, web, tag, notes in suggestions:
+            with st.expander(f"{name} ({tag or 'untagged'})"):
+                new_name = st.text_input("Name", value=name, key=f"name-{sid}")
+                new_addr = st.text_input("Address", value=addr or "", key=f"addr-{sid}")
+                new_web = st.text_input("Website", value=web or "", key=f"web-{sid}")
+                new_tag = st.text_input("Label", value=tag or "", key=f"tag-{sid}")
+                approve = st.button("Approve", key=f"approve-{sid}")
+                if approve:
+                    with sqlite3.connect(DB_FILE) as c:
+                        c.execute(
+                            """
+                            INSERT OR IGNORE INTO restaurants
+                            (name,address,website,has_prix_fixe,label,raw_text,
+                             snippet,review_link,types,location,rating,photo_ref)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                new_name, new_addr, new_web,
+                                1, new_tag, "", "", "", "", "User Submission", None, None
+                            ),
+                        )
+                        c.execute("DELETE FROM user_suggestions WHERE id=?", (sid,))
+                    st.success(f"Approved: {new_name}")
+                    safe_rerun()
+    else:
+        st.info("No pending suggestions.")
+elif auth and password != "frog":
+    st.error("Incorrect password.")
+        
+        
