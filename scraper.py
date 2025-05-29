@@ -1,12 +1,14 @@
-
 """
-Core crawler / classifier.
+Core crawler / classifier – rev 3 (May‑2025)
 
-Changes in this revision
-────────────────────────
-• Suppress BeautifulSoup’s XMLParsedAsHTMLWarning (noise in the log)
-• Auto‑switch to the XML parser when the response declares an XML MIME
-  type or the URL ends with “.xml” — no behavioural impact for HTML.
+Key enhancements
+────────────────
+• Broader text extraction: +<span>, <section>, <article>, <a>
+• Generic fallback:
+    – Tries a small set of deal‑heavy sub‑pages: /events, /specials, /menu, …
+    – Probes typical PDF locations (/images, /pdf, /menus) for menu*.pdf & specials*.pdf
+• Existing public API and PATTERNS remain intact – Streamlit code needs **zero**
+  changes; layout, DB schema and display logic are unaffected.
 """
 
 import re, warnings
@@ -15,15 +17,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
-from bs4 import (
-    BeautifulSoup,
-    XMLParsedAsHTMLWarning,   # for warning filter
-)
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 import fitz  # PyMuPDF
 
-# ─── quiet the parser warning ────────────────────────────────────────────────
+# ─── silence Soup’s XMLParsedAsHTMLWarning ───────────────────────────────────
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-
 
 # ────────────────── keyword patterns (priority order) ───────────────────────
 PATTERNS = {
@@ -45,9 +43,20 @@ PATTERNS = {
     "deals":          r"\bdeals?\b",
 }
 LABEL_ORDER = list(PATTERNS.keys())
-
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# ────────────────── fallback candidates ──────────────────────────────────────
+_COMMON_HTML_SLUGS = [
+    "events", "specials", "wednesday-specials", "weekly-specials",
+    "menu", "menus", "lunch-specials", "deals", "offers",
+]
+
+_PDF_CANDIDATES = [
+    "menu.pdf", "fullmenu.pdf", "specials.pdf", "lunch-specials.pdf",
+    "weekly-specials.pdf", "dinner-specials.pdf", "value-menu.pdf",
+]
+
+_PDF_DIRS = ["", "images", "pdf", "menus"]
 
 # ────────────────── helpers ──────────────────────────────────────────────────
 def _pdf_bytes_to_text(data: bytes) -> str:
@@ -57,6 +66,11 @@ def _pdf_bytes_to_text(data: bytes) -> str:
     except Exception:
         return ""
 
+def _match_label(text: str):
+    for lbl, pattern in PATTERNS.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return lbl
+    return None
 
 def _extract_text_and_match(resp, src_url):
     """Return (text, matched_label | None)."""
@@ -67,24 +81,18 @@ def _extract_text_and_match(resp, src_url):
         return text, _match_label(text)
 
     # choose parser type
-    if "xml" in ctype or src_url.lower().endswith(".xml"):
-        soup = BeautifulSoup(resp.text, "xml")
-    else:
-        soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(
+        resp.text,
+        "xml" if ("xml" in ctype or src_url.lower().endswith(".xml")) else "html.parser",
+    )
 
+    # broader tag set to capture deals buried in spans & sections
+    TAGS = ["h1", "h2", "h3", "p", "li", "div", "span", "section", "article", "a"]
     text = " ".join(
         t.get_text(" ", strip=True).lower()
-        for t in soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+        for t in soup.find_all(TAGS)
     )
     return text, _match_label(text)
-
-
-def _match_label(text: str):
-    for lbl, pattern in PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return lbl
-    return None
-
 
 def _safe_fetch_and_match(url):
     try:
@@ -94,12 +102,19 @@ def _safe_fetch_and_match(url):
     except Exception:
         return "", None
 
+# ────────────────── fallback URL generators ─────────────────────────────────
+def _guess_common_html(root_url: str):
+    base = urlunparse(urlparse(root_url)._replace(path="", params="", query="", fragment=""))
+    return [urljoin(base, f"/{slug}") for slug in _COMMON_HTML_SLUGS]
 
-# ────────────────── WordPress fallback ───────────────────────────────────────
-_PDF_CANDIDATES = [
-    "menu.pdf", "fullmenu.pdf", "fullmenu-1.pdf",
-    "menu-1.pdf", "specials.pdf", "lunch-specials.pdf",
-]
+def _guess_generic_pdfs(root_url: str):
+    base = urlunparse(urlparse(root_url)._replace(path="", params="", query="", fragment=""))
+    out = []
+    for d in _PDF_DIRS:
+        for name in _PDF_CANDIDATES:
+            path = f"/{d}/{name}" if d else f"/{name}"
+            out.append(urljoin(base, path))
+    return out
 
 def _wordpress_guess_pdfs(root_url: str):
     scheme, netloc = urlparse(root_url)[:2]
@@ -107,19 +122,17 @@ def _wordpress_guess_pdfs(root_url: str):
         return []
     base = urlunparse((scheme, netloc, "", "", "", ""))
     year_now = datetime.now().year
-    pdf_urls = [
+    return [
         f"{base}/wp-content/uploads/{yr}/{name}"
         for yr in range(year_now, year_now - 5, -1)
         for name in _PDF_CANDIDATES
     ]
-    return pdf_urls[:20]
-
 
 # ────────────────── public API ───────────────────────────────────────────────
 def fetch_website_text(url: str) -> str:
     """
     Crawl *url*, its internal links (HTML + ≤3 PDFs) and,
-    if the page is blank WordPress, probe common uploads/*menu*.pdf paths.
+    if needed, probe typical deal pages & PDF locations.
     """
     visited, collected = set(), ""
 
@@ -143,10 +156,15 @@ def fetch_website_text(url: str) -> str:
         visited.add(link)
         (pdf_links if link.lower().endswith(".pdf") else html_links).append(link)
 
-    if not html_links and not pdf_links and "wp-content" not in url:
-        pdf_links.extend(_wordpress_guess_pdfs(url))
+    # ───── synthetic guesses ────────────────────────────────────────────────
+    html_links.extend([l for l in _guess_common_html(url) if l not in visited])
+    visited.update(html_links)
 
-    pdf_links = pdf_links[:3]
+    if not pdf_links:
+        # WordPress → pdf links first, else generic dirs
+        pdf_links.extend(_wordpress_guess_pdfs(url) or _guess_generic_pdfs(url))
+    pdf_links = pdf_links[:3]  # safety cap
+
     link_queue = pdf_links + html_links
 
     with ThreadPoolExecutor(max_workers=10) as ex:
@@ -157,7 +175,6 @@ def fetch_website_text(url: str) -> str:
                 collected += " " + sub_text
 
     return collected.strip()
-
 
 def detect_prix_fixe_detailed(text: str):
     lbl = _match_label(text)
