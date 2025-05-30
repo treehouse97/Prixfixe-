@@ -93,7 +93,7 @@ def write_to_sheet(rows):
     if not rows: return
     try:
         for r in rows:
-            summary = r[5][:49999]  # raw_text trimmed to max 50k
+            summary = (r[5] or "")[:49000]  # raw_text trimmed to max 50k
             sheet.append_row([
                 r[0], r[1], r[2], r[4], summary,
                 r[6], r[7], r[8], r[9], str(r[10])
