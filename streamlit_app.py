@@ -99,7 +99,7 @@ def _get_json(url: str, params: Dict) -> Dict:
         return r.json()
     except Exception as e:
         log.info(f"[API ERROR] {e}")
-        return {} json, os, re, sqlite3, tempfile, time, uuid, logging
+        return {} 
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
