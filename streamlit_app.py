@@ -11,71 +11,28 @@ from google.oauth2.service_account import Credentials
 from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
+from sheets_cache import get_cached_text, set_cached_text  # <— uses sheets_cache.py
 
-# ──────── Config
+# ─────────────── Streamlit Setup ───────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
 
-# ──────── Google Sheets Setup
-scope = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"], scopes=scope
-)
-client = gspread.authorize(credentials)
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0/edit"
-spreadsheet = client.open_by_url(SHEET_URL)
-
-# ──────── Cache Sheet (Remote)
-CACHE_SHEET_NAME = "Cache"
-MAX_CACHE_ENTRIES = 500
-
-def get_cache_sheet():
-    try:
-        return spreadsheet.worksheet(CACHE_SHEET_NAME)
-    except gspread.exceptions.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=CACHE_SHEET_NAME, rows="1000", cols="2")
-
-def get_cached_text(place_id: str) -> str | None:
-    sheet = get_cache_sheet()
-    try:
-        records = sheet.get_all_records()
-        for row in records:
-            if row.get("place_id") == place_id:
-                return row.get("text")
-    except Exception as e:
-        log.error(f"Error reading cache: {e}")
-    return None
-
-def set_cached_text(place_id: str, text: str):
-    sheet = get_cache_sheet()
-    try:
-        sheet.append_row([place_id, text])
-        prune_cache(sheet)
-        log.info(f"[CACHE SET] {place_id}")
-    except Exception as e:
-        log.error(f"Failed to write to cache for {place_id}: {e}")
-
-def prune_cache(sheet):
-    try:
-        rows = sheet.get_all_values()
-        if len(rows) > MAX_CACHE_ENTRIES:
-            sheet.delete_rows(2, len(rows) - MAX_CACHE_ENTRIES + 2)
-            log.info(f"Pruned {len(rows) - MAX_CACHE_ENTRIES} rows from cache.")
-    except Exception as e:
-        log.error(f"Prune error: {e}")
-
-# ──────── Logging
+# ─────────────── Logging ───────────────
 logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
 log = logging.getLogger("prix_fixe_debug")
 
-# ──────── Constants
+# ─────────────── Deal Definitions ───────────────
 DEAL_GROUPS = {
-    "Prix Fixe": {"prix fixe", "pre fixe", "price fixed", "fixed menu", "set menu", "tasting menu", "multi-course", "3-course"},
+    "Prix Fixe": {
+        "prix fixe", "pre fixe", "price fixed", "fixed menu",
+        "set menu", "tasting menu", "multi-course", "3-course"
+    },
     "Lunch Special": {"lunch special", "complete lunch"},
     "Specials": {"specials", "special menu", "weekly special"},
     "Deals": {"combo deal", "value menu", "deals"},
 }
 _DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
 
+# ─────────────── Helper Functions ───────────────
 def canonical_group(label: str) -> str:
     l = label.lower()
     for g, synonyms in DEAL_GROUPS.items():
@@ -90,21 +47,32 @@ def clean_utf8(s: str) -> str:
     return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 def nice_types(tp: List[str]) -> List[str]:
-    banned = {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}
+    banned = {
+        "restaurant", "food", "point_of_interest", "establishment",
+        "store", "bar", "meal_takeaway", "meal_delivery",
+    }
     return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
 
 def first_review(pid: str) -> str:
     try:
         revs = (place_details(pid).get("reviews") or [])
         txt = revs[0].get("text", "") if revs else ""
-        return (txt[:100] + "…") if len(txt) > 100 else txt.strip()
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return (txt[:100] + "…") if len(txt) > 100 else txt
     except Exception:
         return ""
 
 def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
-# ──────── DB Setup
+def load_lottie(path: str):
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+
+# ─────────────── DB Setup ───────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"] = False
@@ -148,7 +116,7 @@ def fetch_records(loc):
                FROM restaurants WHERE has_prix_fixe=1 AND location=?""", (loc,)
         ).fetchall()
 
-# ──────── Logic
+# ─────────────── Business Logic ───────────────
 def prioritize(places):
     hits = {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}
     return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in hits) else 0)
@@ -191,7 +159,7 @@ def process_place(place, loc):
         log.info(f"{name} • skipped (no qualifying phrases found)")
     return None
 
-# ──────── UI
+# ─────────────── UI & Layout ───────────────
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(f'<span class="chip">{t}</span>' for t in types_txt.split(", ") if types_txt)
     photo_tag = f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else ""
@@ -226,7 +194,7 @@ html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:
 .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
 </style>""", unsafe_allow_html=True)
 
-# ──────── App
+# ─────────────── Streamlit Page ───────────────
 ensure_schema()
 st.title("The Fixe")
 
