@@ -16,7 +16,26 @@ from cache import get_cached_text, set_cached_text
 from scraper import fetch_website_text
 from sheets_cache import get_worksheet
 
+import gspread
+from google.oauth2.service_account import Credentials
 
+# Load credentials from Streamlit secrets
+scope = ["https://www.googleapis.com/auth/spreadsheets"]
+credentials = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"],
+    scopes=scope
+)
+
+# Authorize client
+client = gspread.authorize(credentials)
+
+# Open the Google Sheet (by name or URL)
+spreadsheet = client.open_by_url("https://docs.google.com/spreadsheets/d/10j8gkxcrBc8vCi3nWkLPnx9Bab4mhj-Gu91Pss3QLoQ/edit")
+sheet = spreadsheet.sheet1  # or use .worksheet('YourSheetName')
+
+# Example: read data
+data = sheet.get_all_records()
+st.write(data)
 
 
 
