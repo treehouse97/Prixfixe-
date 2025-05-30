@@ -1,32 +1,18 @@
 import streamlit as st
 from streamlit_lottie import st_lottie
-
-# ─────────────── Set Page Config FIRST ───────────────
-st.set_page_config("The Fixe", "🍽", layout="wide")
-
-# ─────────────── Imports ───────────────
 import json, os, re, sqlite3, tempfile, time, uuid, logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
-
 import gspread
 from google.oauth2.service_account import Credentials
-
 from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
-from sheets_cache import get_cached_text, set_cached_text  # NEW
+from sheets_cache import get_cached_text, set_cached_text
 
-# ─────────────── Google Sheets Setup ───────────────
-scope = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"], scopes=scope
-)
-client = gspread.authorize(credentials)
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0/edit"
-sheet = client.open_by_url(SHEET_URL).sheet1
+# ─────────────── Init ───────────────
+st.set_page_config("The Fixe", "🍽", layout="wide")
 
-# ─────────────── Logging ───────────────
 logging.basicConfig(
     level=logging.INFO,
     format="The Fixe DEBUG » %(message)s",
@@ -34,7 +20,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("prix_fixe_debug")
 
-# ─────────────── Constants ───────────────
+# ─────────────── Groups ───────────────
 DEAL_GROUPS = {
     "Prix Fixe": {
         "prix fixe", "pre fixe", "price fixed",
@@ -90,7 +76,7 @@ def first_review(pid: str) -> str:
 def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
-# ─────────────── DB Setup ───────────────
+# ─────────────── DB ───────────────
 if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(
         tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
@@ -98,7 +84,6 @@ if "db_file" not in st.session_state:
     st.session_state["searched"] = False
 
 DB_FILE = st.session_state["db_file"]
-
 SCHEMA = """
 CREATE TABLE restaurants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,19 +135,7 @@ def fetch_records(loc):
             (loc,),
         ).fetchall()
 
-def write_to_sheet(rows):
-    if not rows:
-        return
-    try:
-        formatted = [[
-            r[0], r[1], r[2], r[4], r[6],
-            r[7], r[8], r[9], r[10], r[11],
-        ] for r in rows]
-        sheet.append_rows(formatted, value_input_option="USER_ENTERED")
-    except Exception as e:
-        log.error(f"Sheet write failed: {e}")
-
-# ─────────────── Acquisition ───────────────
+# ─────────────── Deal Analysis ───────────────
 def prioritize(places):
     hits = {
         "bistro", "brasserie", "trattoria", "tavern",
@@ -220,7 +193,7 @@ def process_place(place, loc):
         log.info(f"{name} • skipped (no qualifying phrases found)")
     return None
 
-# ─────────────── UI Renderer ───────────────
+# ─────────────── UI Card ───────────────
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
     chips = "".join(
         f'<span class="chip">{t}</span>'
@@ -246,31 +219,30 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
         f'<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
     )
 
-# ─────────────── Style ───────────────
-st.markdown(
-    """<style>
-    html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
-    .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
-    .stButton>button:hover{background:#343a40!important;}
-    .stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
-    .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
-    .card img{width:100%;height:180px;object-fit:cover}
-    .body{padding:12px 16px}
-    .title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
-    .snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}
-    .snippet a{color:#0d6efd;text-decoration:none}
-    .chips{margin-bottom:4px}
-    .chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
-          padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
-    .addr{font-size:.9rem;color:#555;margin-bottom:6px}
-    .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-    .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-           padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
-    </style>""",
-    unsafe_allow_html=True,
-)
+# ─────────────── CSS ───────────────
+st.markdown("""
+<style>
+html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
+.stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
+.stButton>button:hover{background:#343a40!important;}
+.stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
+.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
+.card img{width:100%;height:180px;object-fit:cover}
+.body{padding:12px 16px}
+.title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
+.snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}
+.snippet a{color:#0d6efd;text-decoration:none}
+.chips{margin-bottom:4px}
+.chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
+      padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
+.addr{font-size:.9rem;color:#555;margin-bottom:6px}
+.rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
+.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
+       padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
+</style>
+""", unsafe_allow_html=True)
 
-# ─────────────── App UI Logic ───────────────
+# ─────────────── Page Logic ───────────────
 ensure_schema()
 st.title("The Fixe")
 
@@ -305,7 +277,6 @@ def run_search(limit):
             rows = list(ex.map(lambda p: process_place(p, location), cand))
         valid_rows = [r for r in rows if r]
         store_rows(valid_rows)
-        write_to_sheet(valid_rows)
     except Exception as e:
         st.error(f"Search failed: {e}")
 
