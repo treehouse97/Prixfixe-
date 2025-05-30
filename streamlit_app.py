@@ -1,4 +1,105 @@
-import json, os, re, sqlite3, tempfile, time, uuid, logging
+importimport time, json, sqlite3, logging
+from typing import List, Dict
+import requests
+
+from settings import GOOGLE_API_KEY
+
+TEXT_URL   = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+log = logging.getLogger("prix_fixe_debug")
+
+# ────────────────── Public Interface ─────────────────────────────
+def text_search_restaurants(location_name: str, db_file: str) -> List[Dict]:
+    """
+    Google Text Search → returns a list of places that have a website.
+    Each dict includes: place_id, name, vicinity, website, rating,
+                        photo_ref, types
+    """
+    params = {"query": f"restaurants in {location_name}", "key": GOOGLE_API_KEY}
+    seen, results = set(), []
+
+    while True:
+        data = _get_json(TEXT_URL, params)
+
+        for item in data.get("results", []):
+            pid = item.get("place_id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+
+            det = _fetch_details(pid, db_file)
+            website = det.get("website")
+            if not website:
+                continue
+
+            photos = det.get("photos", [])
+            results.append({
+                "place_id": pid,
+                "name": det.get("name", ""),
+                "vicinity": det.get("vicinity", ""),
+                "website": website,
+                "rating": det.get("rating"),
+                "photo_ref": photos[0]["photo_reference"] if photos else None,
+                "types": item.get("types", []),
+            })
+
+        nxt = data.get("next_page_token")
+        if not nxt:
+            break
+        time.sleep(2)
+        params = {"pagetoken": nxt, "key": GOOGLE_API_KEY}
+
+    return results
+
+def place_details(place_id: str, db_file: str) -> Dict:
+    """
+    Fetch `reviews` and `types` using cache-aware place detail lookup.
+    """
+    return _fetch_details(place_id, db_file, fields="reviews,types")
+
+# ────────────────── Internal Helpers ─────────────────────────────
+def _fetch_details(pid: str, db_file: str, fields: str = "name,vicinity,website,rating,photos") -> Dict:
+    now = int(time.time())
+    with sqlite3.connect(db_file) as conn:
+        c = conn.cursor()
+        c.execute("SELECT details_json, timestamp FROM place_cache WHERE place_id=?", (pid,))
+        row = c.fetchone()
+
+        if row:
+            cached_json, ts = row
+            try:
+                parsed = json.loads(cached_json)
+                if now - ts < 86400:  # cache valid for 1 day
+                    log.info(f"[CACHE HIT] place_id={pid}")
+                    return parsed
+            except Exception:
+                pass
+
+    params = {"place_id": pid, "fields": fields, "key": GOOGLE_API_KEY}
+    data = _get_json(DETAIL_URL, params)
+    result = data.get("result", {})
+
+    try:
+        with sqlite3.connect(db_file) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO place_cache (place_id, details_json, timestamp) VALUES (?, ?, ?)",
+                (pid, json.dumps(result), now),
+            )
+        log.info(f"[CACHE MISS] Fetched from Google API: {pid}")
+    except Exception as e:
+        log.info(f"[CACHE STORE FAIL] {pid} → {e}")
+
+    return result
+
+def _get_json(url: str, params: Dict) -> Dict:
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        log.info(f"[API ERROR] {e}")
+        return {} json, os, re, sqlite3, tempfile, time, uuid, logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
