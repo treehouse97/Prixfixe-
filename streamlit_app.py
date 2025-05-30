@@ -12,6 +12,10 @@ from scraper import (
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
+from cache import get_cached_text, set_cached_text
+from scraper import fetch_website_text
+
+
 
 logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
 log = logging.getLogger("prix_fixe_debug")
@@ -28,6 +32,17 @@ DEAL_GROUPS = {
 }
 _DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
 
+def process_place(place_id: str, website_url: str):
+    cached = get_cached_text(place_id)
+    if cached:
+        print(f"[CACHE HIT] {place_id}")
+        return cached
+    else:
+        print(f"[CACHE MISS] {place_id}")
+        text = fetch_website_text(website_url)
+        set_cached_text(place_id, text)
+        return text
+        
 def canonical_group(label: str) -> str:
     l = label.lower()
     for g, synonyms in DEAL_GROUPS.items():
