@@ -1,3 +1,0 @@
-DATA_DIR = pathlib.Path(".dbdata")
-DATA_DIR.mkdir(exist_ok=True)
-DB_FILE = str(DATA_DIR / "prix_fixe.db")
