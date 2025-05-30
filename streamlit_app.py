@@ -12,6 +12,7 @@ from scraper import (
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
+Import pathlib
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,13 +75,13 @@ def first_review(pid: str) -> str:
 def review_link(pid: str) -> str:
     return f"https://search.google.com/local/reviews?placeid={pid}"
 
-if "db_file" not in st.session_state:
-    st.session_state["db_file"] = os.path.join(
-        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
-    )
-    st.session_state["searched"] = False
+# Ensure persistent data dir exists
+DATA_DIR = pathlib.Path(".data")
+DATA_DIR.mkdir(exist_ok=True)
+DB_FILE = str(DATA_DIR / "prix_fixe.db")
 
-DB_FILE = st.session_state["db_file"]
+if "searched" not in st.session_state:
+    st.session_state["searched"] = False
 
 SCHEMA = """
 CREATE TABLE restaurants (
