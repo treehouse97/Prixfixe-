@@ -7,7 +7,7 @@ from settings import GOOGLE_API_KEY
 TEXT_URL   = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# You must pass the path to the active DB file
+# ────────────────── PUBLIC API ───────────────────────────────────────────────
 def text_search_restaurants(location_name: str, db_file: str) -> List[Dict]:
     params = {"query": f"restaurants in {location_name}", "key": GOOGLE_API_KEY}
     seen, results = set(), []
@@ -51,19 +51,24 @@ def text_search_restaurants(location_name: str, db_file: str) -> List[Dict]:
 def place_details(place_id: str, db_file: str) -> Dict:
     return cached_place_details(place_id, db_file, mode="details")
 
-
+# ────────────────── CACHING LAYER ────────────────────────────────────────────
 def cached_place_details(pid: str, db_file: str, mode="search") -> Dict:
     now = int(time.time())
     ttl = 60 * 60 * 24 * 7  # 7 days
 
-    with sqlite3.connect(db_file) as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute(
-            "SELECT details_json, timestamp FROM place_cache WHERE place_id=?",
-            (pid,),
-        ).fetchone()
-        if row and now - row["timestamp"] < ttl:
-            return json.loads(row["details_json"])
+    try:
+        with sqlite3.connect(db_file) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT details_json, timestamp FROM place_cache WHERE place_id=?",
+                (pid,),
+            ).fetchone()
+
+            if row and now - row["timestamp"] < ttl:
+                print(f"[CACHE HIT] place_id={pid}")
+                return json.loads(row["details_json"])
+    except Exception as e:
+        print(f"[CACHE ERROR] Could not read cache: {e}")
 
     # Choose minimal field set per usage
     if mode == "details":
@@ -71,20 +76,28 @@ def cached_place_details(pid: str, db_file: str, mode="search") -> Dict:
     else:
         fields = "name,vicinity,website,rating,photos"
 
-    data = _get_json(
-        DETAIL_URL,
-        {"place_id": pid, "fields": fields, "key": GOOGLE_API_KEY},
-    ).get("result", {})
+    try:
+        data = _get_json(
+            DETAIL_URL,
+            {"place_id": pid, "fields": fields, "key": GOOGLE_API_KEY},
+        ).get("result", {})
+        print(f"[CACHE MISS] Fetched from Google API: {pid}")
+    except Exception as e:
+        print(f"[API ERROR] Failed to fetch from Google: {e}")
+        return {}
 
-    with sqlite3.connect(db_file) as db:
-        db.execute(
-            "INSERT OR REPLACE INTO place_cache (place_id, details_json, timestamp) VALUES (?, ?, ?)",
-            (pid, json.dumps(data), now),
-        )
+    try:
+        with sqlite3.connect(db_file) as db:
+            db.execute(
+                "INSERT OR REPLACE INTO place_cache (place_id, details_json, timestamp) VALUES (?, ?, ?)",
+                (pid, json.dumps(data), now),
+            )
+    except Exception as e:
+        print(f"[CACHE ERROR] Failed to write to cache: {e}")
 
     return data
 
-
+# ────────────────── REQUEST HELPER ───────────────────────────────────────────
 def _get_json(url: str, params: Dict) -> Dict:
     try:
         r = requests.get(url, params=params, timeout=10)
