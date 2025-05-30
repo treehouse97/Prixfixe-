@@ -1,11 +1,18 @@
-import time, json, sqlite3
+import time, json, sqlite3, logging
 from typing import List, Dict
 import requests
-
 from settings import GOOGLE_API_KEY
 
 TEXT_URL   = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+# ────────────────── LOGGING SETUP ────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="The Fixe DEBUG » %(message)s",
+    force=True,
+)
+log = logging.getLogger("prix_fixe_cache")
 
 # ────────────────── PUBLIC API ───────────────────────────────────────────────
 def text_search_restaurants(location_name: str, db_file: str) -> List[Dict]:
@@ -65,10 +72,10 @@ def cached_place_details(pid: str, db_file: str, mode="search") -> Dict:
             ).fetchone()
 
             if row and now - row["timestamp"] < ttl:
-                print(f"[CACHE HIT] place_id={pid}")
+                log.info(f"[CACHE HIT] place_id={pid}")
                 return json.loads(row["details_json"])
     except Exception as e:
-        print(f"[CACHE ERROR] Could not read cache: {e}")
+        log.info(f"[CACHE ERROR] Could not read cache: {e}")
 
     # Choose minimal field set per usage
     if mode == "details":
@@ -81,9 +88,9 @@ def cached_place_details(pid: str, db_file: str, mode="search") -> Dict:
             DETAIL_URL,
             {"place_id": pid, "fields": fields, "key": GOOGLE_API_KEY},
         ).get("result", {})
-        print(f"[CACHE MISS] Fetched from Google API: {pid}")
+        log.info(f"[CACHE MISS] Fetched from Google API: {pid}")
     except Exception as e:
-        print(f"[API ERROR] Failed to fetch from Google: {e}")
+        log.info(f"[API ERROR] Failed to fetch from Google: {e}")
         return {}
 
     try:
@@ -93,7 +100,7 @@ def cached_place_details(pid: str, db_file: str, mode="search") -> Dict:
                 (pid, json.dumps(data), now),
             )
     except Exception as e:
-        print(f"[CACHE ERROR] Failed to write to cache: {e}")
+        log.info(f"[CACHE ERROR] Failed to write to cache: {e}")
 
     return data
 
