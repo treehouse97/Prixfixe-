@@ -1,51 +1,51 @@
-import logging
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
 
-# Logging setup
-log = logging.getLogger("prix_fixe_debug")
-
-# Google Sheets config
+# === CONSTANTS ===
 SHEET_ID = "1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0"
-SHEET_NAME = "Sheet1"  # change if using a different sheet
 
-def _get_client():
-    scope = ["https://www.googleapis.com/auth/spreadsheets"]
-    credentials = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=scope
-    )
-    return gspread.authorize(credentials)
+# === CLIENT SETUP ===
+def get_gsheet_client():
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file"
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+    return gspread.authorize(creds)
 
-def get_cached_text(place_id: str) -> str | None:
+# === DATA FETCH ===
+def get_sheet_data():
+    client = get_gsheet_client()
+    sheet = client.open_by_key(SHEET_ID).sheet1
+    data = sheet.get_all_records()
+    return pd.DataFrame(data)
+
+# === CACHE LOOKUP ===
+def cache_lookup(place_id):
     try:
-        sheet = _get_client().open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-        records = sheet.get_all_records()
-        for row in records:
-            if row["place_id"] == place_id:
-                log.info(f"[CACHE HIT] {place_id}")
-                return row["text"]
-        log.info(f"[CACHE MISS] {place_id}")
+        df = get_sheet_data()
+        result = df[df["place_id"] == place_id]
+        if not result.empty:
+            return result.iloc[0]["text"]
     except Exception as e:
-        log.error(f"[CACHE FAIL] {place_id}: {e}")
+        print(f"Cache lookup failed: {e}")
     return None
 
-def set_cached_text(place_id: str, text: str):
+# === CACHE STORE ===
+def cache_store(place_id, text):
     try:
-        sheet = _get_client().open_by_key(SHEET_ID).worksheet(SHEET_NAME)
-        sheet.append_row([place_id, text], value_input_option="USER_ENTERED")
-        log.info(f"[SHEET SET] {place_id}")
-        _prune_sheet(sheet)
-    except Exception as e:
-        log.error(f"[SHEET FAIL] {place_id}: {e}")
+        client = get_gsheet_client()
+        sheet = client.open_by_key(SHEET_ID).sheet1
+        data = sheet.get_all_values()
 
-def _prune_sheet(sheet):
-    try:
-        records = sheet.get_all_values()
-        header, rows = records[0], records[1:]
-        if len(rows) > 500:
-            excess = len(rows) - 500
-            sheet.delete_rows(2, 2 + excess - 1)
-            log.info(f"Pruned {excess} rows from cache")
+        for i, row in enumerate(data):
+            if len(row) > 0 and row[0] == place_id:
+                sheet.update_cell(i + 1, 2, text[:49999])  # Google Sheets max cell length
+                return
+
+        sheet.append_row([place_id, text[:49999]])
     except Exception as e:
-        log.error(f"Failed to prune cache: {e}")
+        print(f"Cache store failed: {e}")
