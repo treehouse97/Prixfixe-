@@ -14,11 +14,18 @@ from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 from cache import get_cached_text, set_cached_text
 from scraper import fetch_website_text
+from sheets_cache import get_worksheet
+
+
 
 
 
 logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
 log = logging.getLogger("prix_fixe_debug")
+
+ws = get_worksheet()
+value = ws.acell("A1").value
+st.write("A1:", value)
 
 DEAL_GROUPS = {
     "Prix Fixe": {
