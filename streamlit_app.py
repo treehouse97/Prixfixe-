@@ -5,43 +5,23 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
+# Page config MUST be first Streamlit command
+st.set_page_config("The Fixe", "🍽", layout="wide")
+
 from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
-    PATTERNS,          # ← unchanged import but now XML‑aware parser below
+    PATTERNS,
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 from cache import get_cached_text, set_cached_text
-from scraper import fetch_website_text
 from sheets_cache import get_worksheet
-
-import gspread
-from google.oauth2.service_account import Credentials
-
-# Load credentials from Streamlit secrets
-scope = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"],
-    scopes=scope
-)
-
-# Authorize client
-client = gspread.authorize(credentials)
-
-# Open the Google Sheet (by name or URL)
-spreadsheet = client.open_by_url("https://docs.google.com/spreadsheets/d/10j8gkxcrBc8vCi3nWkLPnx9Bab4mhj-Gu91Pss3QLoQ/edit")
-sheet = spreadsheet.sheet1  # or use .worksheet('YourSheetName')
-
-# Example: read data
-data = sheet.get_all_records()
-st.write(data)
-
-
 
 logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
 log = logging.getLogger("prix_fixe_debug")
 
+# Read a cell from the connected Google Sheet
 ws = get_worksheet()
 value = ws.acell("A1").value
 st.write("A1:", value)
@@ -68,7 +48,7 @@ def process_place(place_id: str, website_url: str):
         text = fetch_website_text(website_url)
         set_cached_text(place_id, text)
         return text
-        
+
 def canonical_group(label: str) -> str:
     l = label.lower()
     for g, synonyms in DEAL_GROUPS.items():
@@ -215,7 +195,7 @@ def process_place(place, loc):
             snippet = first_review(pid)
             types = ", ".join(nice_types(g_types))
             link = review_link(pid)
-            log.info(f"{name} • card rendered")  # ← added line
+            log.info(f"{name} • card rendered")
             return (
                 name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo,
             )
@@ -250,7 +230,6 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
         f'<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
     )
 
-st.set_page_config("The Fixe", "🍽", layout="wide")
 st.markdown(
     """<style>
     html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
