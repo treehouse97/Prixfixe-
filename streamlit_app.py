@@ -174,7 +174,9 @@ def run_search(limit):
     status, anim = st.empty(), st.empty()
     status.markdown("### Please wait for The Fixe… *(we’re cooking)*", unsafe_allow_html=True)
     cook = load_lottie("Animation - 1748132250829.json")
-    if cook: with anim.container(): st_lottie(cook, height=260, key=f"cook-{time.time()}")
+    if cook:
+    with anim.container():
+        st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
     try:
         raw = text_search_restaurants(location)
