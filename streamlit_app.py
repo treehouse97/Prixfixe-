@@ -20,7 +20,7 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1mZymnpQ1l-lEqiwDnursBKN0Mh6
 try:
     spreadsheet = client.open_by_url(SHEET_URL)
     sheet = spreadsheet.sheet1  # Use first sheet
-    sheet.update("A1", "Test successful")
+    sheet.update("A1", [["Test successful"]])  # CORRECT format: list of lists
     st.success("✅ Successfully wrote to the spreadsheet (A1 = 'Test successful')")
 except Exception as e:
     st.error("❌ Failed to write to the spreadsheet.")
