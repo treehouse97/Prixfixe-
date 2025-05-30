@@ -1,164 +1,305 @@
-import os
-import re
-import json
-import time
-import uuid
-import sqlite3
-import tempfile
-import logging
-import requests
-import streamlit as st
+import json, os, re, sqlite3, tempfile, time, uuid, logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
-from pathlib import Path
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-from PyPDF2 import PdfReader
-from playwright.sync_api import sync_playwright
 
-# Constants
-DATA_DIR = Path(".data")
-DB_FILE = DATA_DIR / "places.db"
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+import streamlit as st
+from streamlit_lottie import st_lottie
 
-# Debug mode toggle
-DEBUG_MODE = st.checkbox("Enable Debug Logging")
+from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
+from settings import GOOGLE_API_KEY
+from places_api import text_search_restaurants, place_details
 
-def log(message: str):
-    if DEBUG_MODE:
-        st.write("The Fixe DEBUG » ", message)
-    def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
+log = logging.getLogger("prix_fixe_debug")
+
+DEAL_GROUPS = {
+    "Prix Fixe": {
+        "prix fixe", "pre fixe", "price fixed",
+        "fixed menu", "set menu", "tasting menu",
+        "multi-course", "3-course",
+    },
+    "Lunch Special": {"lunch special", "complete lunch"},
+    "Specials": {"specials", "special menu", "weekly special"},
+    "Deals": {"combo deal", "value menu", "deals"},
+}
+_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
+
+def canonical_group(label: str) -> str:
+    l = label.lower()
+    for g, synonyms in DEAL_GROUPS.items():
+        if any(s in l for s in synonyms):
+            return g
+    return label.title()
+
+def group_rank(g: str) -> int:
+    return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
+
+def safe_rerun():
+    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+
+def clean_utf8(s: str) -> str:
+    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
+
+def load_lottie(path: str):
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+
+def nice_types(tp: List[str]) -> List[str]:
+    banned = {
+        "restaurant", "food", "point_of_interest", "establishment",
+        "store", "bar", "meal_takeaway", "meal_delivery",
+    }
+    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
+
+def first_review(pid: str) -> str:
+    try:
+        revs = (place_details(pid, st.session_state["db_file"]).get("reviews") or [])
+        txt = revs[0].get("text", "") if revs else ""
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return (txt[:100] + "…") if len(txt) > 100 else txt
+    except Exception:
+        return ""
+
+def review_link(pid: str) -> str:
+    return f"https://search.google.com/local/reviews?placeid={pid}"
+
+if "db_file" not in st.session_state:
+    st.session_state["db_file"] = os.path.join(
+        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
+    )
+    st.session_state["searched"] = False
+
+DB_FILE = st.session_state["db_file"]
+
+SCHEMA = """
+CREATE TABLE restaurants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT, address TEXT, website TEXT,
+  has_prix_fixe INTEGER, label TEXT,
+  raw_text TEXT,
+  snippet TEXT,
+  review_link TEXT,
+  types TEXT,
+  location TEXT, rating REAL, photo_ref TEXT,
+  UNIQUE(name, address, location)
+);
+CREATE TABLE place_cache (
+  place_id TEXT PRIMARY KEY,
+  details_json TEXT,
+  timestamp INTEGER
+);
+"""
 
 def init_db():
-    DATA_DIR.mkdir(exist_ok=True)
-    with get_db_connection() as conn:
-        conn.executescript("""
-CREATE TABLE IF NOT EXISTS restaurants (
-    place_id TEXT PRIMARY KEY,
-    name TEXT,
-    address TEXT,
-    website TEXT,
-    summary TEXT,
-    data JSON
-);
-""")
-        conn.commit()
+    with sqlite3.connect(DB_FILE) as c:
+        c.executescript("DROP TABLE IF EXISTS restaurants; DROP TABLE IF EXISTS place_cache;" + SCHEMA)
 
 def ensure_schema():
     if not os.path.exists(DB_FILE):
         init_db()
         return
     try:
-        with get_db_connection() as conn:
-            conn.execute("SELECT 1 FROM restaurants LIMIT 1")
-    except sqlite3.DatabaseError:
+        with sqlite3.connect(DB_FILE) as c:
+            c.execute("SELECT 1 FROM restaurants LIMIT 1")
+    except sqlite3.OperationalError:
         init_db()
-def cache_place(place_id: str, data: dict):
-    with get_db_connection() as conn:
-        conn.execute(
-            "REPLACE INTO restaurants (place_id, name, address, website, summary, data) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                place_id,
-                data.get("name"),
-                data.get("formatted_address"),
-                data.get("website"),
-                data.get("summary"),
-                json.dumps(data),
-            ),
+
+def store_rows(rows):
+    with sqlite3.connect(DB_FILE) as c:
+        c.executemany(
+            """
+            INSERT OR IGNORE INTO restaurants
+            (name,address,website,has_prix_fixe,label,raw_text,
+             snippet,review_link,types,location,rating,photo_ref)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+            rows,
         )
-        conn.commit()
 
-def lookup_cached_place(place_id: str):
-    with get_db_connection() as conn:
-        cur = conn.execute("SELECT data FROM restaurants WHERE place_id = ?", (place_id,))
-        row = cur.fetchone()
-        return json.loads(row["data"]) if row else None
-def extract_text_from_url(url: str) -> str:
-    domain = urlparse(url).netloc
-    if url.lower().endswith(".pdf"):
-        response = requests.get(url)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-            tmp_pdf.write(response.content)
-            reader = PdfReader(tmp_pdf.name)
-            return "\n".join(page.extract_text() for page in reader.pages if page.extract_text())
-    else:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.goto(url, timeout=15000)
-            content = page.content()
-            browser.close()
-            soup = BeautifulSoup(content, "html.parser")
-            return soup.get_text(separator="\n", strip=True)
-def find_qualifying_phrase(text: str, phrases: List[str]) -> str:
-    for phrase in phrases:
-        if re.search(rf"\b{re.escape(phrase)}\b", text, re.IGNORECASE):
-            return phrase
-    return ""
+def fetch_records(loc):
+    with sqlite3.connect(DB_FILE) as c:
+        return c.execute(
+            """
+            SELECT name,address,website,label,snippet,review_link,
+                   types,rating,photo_ref
+            FROM restaurants WHERE has_prix_fixe=1 AND location=?
+        """,
+            (loc,),
+        ).fetchall()
 
-def process_place(place: dict, phrases: List[str]) -> dict:
-    website = place.get("website")
-    name = place.get("name", "")
-    place_id = place.get("place_id")
-    if not website:
-        log(f"{name} • skipped (no website)")
-        return {}
+def prioritize(places):
+    hits = {
+        "bistro", "brasserie", "trattoria", "tavern",
+        "grill", "prix fixe", "pre fixe", "ristorante",
+    }
+    return sorted(
+        places,
+        key=lambda p: -1
+        if any(k in p.get("name", "").lower() for k in hits)
+        else 0,
+    )
+
+def process_place(place, loc):
+    name, addr = place["name"], place["vicinity"]
+    web = place.get("website") or place.get("menu_url")
+    rating = place.get("rating")
+    photo = place.get("photo_ref")
+    pid = place.get("place_id")
+    g_types = place.get("types", [])
+
+    with sqlite3.connect(DB_FILE) as c:
+        if c.execute(
+            """SELECT 1 FROM restaurants
+               WHERE name=? AND address=? AND location=?""",
+            (name, addr, loc),
+        ).fetchone():
+            log.info(f"{name} • skipped (already processed)")
+            return None
 
     try:
-        text = extract_text_from_url(website)
-        matched_phrase = find_qualifying_phrase(text, phrases)
-        if matched_phrase:
-            summary = f"Triggered by “{matched_phrase}” → {matched_phrase}"
-            place["summary"] = summary
-            log(f"{name} • triggered by “{matched_phrase}” → {matched_phrase}")
-            log(f"{name} • card rendered")  # Added log line for clarity
-            return place
+        text = fetch_website_text(web) if web else ""
+        text = clean_utf8(text)
+        matched, lbl = detect_prix_fixe_detailed(text)
+        if matched:
+            m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
+            trigger = m.group(0) if m else lbl
+            log.info(f"{name} • triggered by “{trigger}” → {lbl}")
+            snippet = first_review(pid)
+            types = ", ".join(nice_types(g_types))
+            link = review_link(pid)
+            log.info(f"{name} • card rendered")  # ← added line
+            return (
+                name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo,
+            )
         else:
-            log(f"{name} • skipped (no qualifying phrases found)")
-            return {}
+            log.info(f"{name} • skipped (no qualifying phrases found)")
     except Exception as e:
-        log(f"{name} • error: {e}")
-        return {}
-def fetch_places_from_google(query: str, location: str, radius: int = 5000) -> List[dict]:
-    base_url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    params = {
-        "query": query,
-        "location": location,
-        "radius": radius,
-        "key": GOOGLE_API_KEY,
-    }
-    response = requests.get(base_url, params=params)
-    response.raise_for_status()
-    return response.json().get("results", [])
+        log.info(f"{name} • skipped (error: {e})")
+    return None
 
-# Streamlit UI
+def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
+    chips = "".join(
+        f'<span class="chip">{t}</span>'
+        for t in (types_txt.split(", ") if types_txt else [])
+    )
+    chips_block = f'<div class="chips">{chips}</div>' if chips else ""
+    photo_tag = (
+        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
+        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
+        if photo else ""
+    )
+    snippet_ht = (
+        f'<p class="snippet">💬 {snippet} '
+        f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
+        if snippet else ""
+    )
+    rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
+    return (
+        '<div class="card">' + photo_tag + '<div class="body">'
+        f'<span class="badge">{lbl}</span>{chips_block}'
+        f'<div class="title">{name}</div>{snippet_ht}'
+        f'<div class="addr">{addr}</div>{rating_ht}'
+        f'<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
+    )
+
+st.set_page_config("The Fixe", "🍽", layout="wide")
+st.markdown(
+    """<style>
+    html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
+    .stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
+    .stButton>button:hover{background:#343a40!important;}
+    .stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
+    .card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
+    .card img{width:100%;height:180px;object-fit:cover}
+    .body{padding:12px 16px}
+    .title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
+    .snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}
+    .snippet a{color:#0d6efd;text-decoration:none}
+    .chips{margin-bottom:4px}
+    .chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
+          padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
+    .addr{font-size:.9rem;color:#555;margin-bottom:6px}
+    .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
+    .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
+           padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 ensure_schema()
 st.title("The Fixe")
 
 if st.button("Reset Database"):
-    with get_db_connection() as conn:
-        conn.executescript("DROP TABLE IF EXISTS restaurants;")
     init_db()
-    st.success("Database reset.")
+    st.session_state["searched"] = False
+    safe_rerun()
 
-search_query = st.text_input("Search for Restaurants", "steakhouse East Islip NY")
-phrases = ["prix fixe", "fixed price", "specials", "special menu", "special offer", "three course", "3-course", "steak deal"]
+location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
+deal_options = ["Any deal"] + _DISPLAY_ORDER
+selected_deals = st.multiselect("Deal type (optional)", deal_options, default=["Any deal"])
 
-if st.button("Run Search"):
-    latlng = "40.732253,-73.210338"
-    places = fetch_places_from_google(search_query, latlng)
-    for place in places:
-        place_id = place.get("place_id")
-        cached = lookup_cached_place(place_id)
-        if cached:
-            log(f"[CACHE HIT] place_id={place_id}")
-            if cached.get("summary"):
-                st.write(cached["name"], "-", cached["summary"])
-        else:
-            log(f"[CACHE MISS] Fetched from Google API: {place_id}")
-            enriched = process_place(place, phrases)
-            if enriched:
-                cache_place(place_id, enriched)
-                st.write(enriched["name"], "-", enriched["summary"])
+def want_group(g: str) -> bool:
+    return ("Any deal" in selected_deals) or (g in selected_deals)
+
+def run_search(limit):
+    status = st.empty()
+    anim = st.empty()
+    status.markdown("### Please wait for The Fixe… *(we’re cooking)*", unsafe_allow_html=True)
+    cook = load_lottie("Animation - 1748132250829.json")
+    if cook:
+        with anim.container():
+            st_lottie(cook, height=260, key=f"cook-{time.time()}")
+
+    try:
+        raw = text_search_restaurants(location, DB_FILE)
+        cand = [p for p in raw if p.get("website") or p.get("menu_url")]
+        cand = prioritize(cand)
+        if limit:
+            cand = cand[:limit]
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            rows = list(ex.map(lambda p: process_place(p, location), cand))
+        store_rows([r for r in rows if r])
+    except Exception as e:
+        st.error(f"Search failed: {e}")
+
+    status.markdown("### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True)
+    done = load_lottie("Finished.json")
+    if done:
+        with anim.container():
+            st_lottie(done, height=260, key=f"done-{time.time()}")
+
+if st.button("Search"):
+    st.session_state.update(searched=True, expanded=False)
+    run_search(limit=25)
+
+if st.session_state.get("searched"):
+    recs = fetch_records(location)
+    if recs:
+        grp = {}
+        for r in recs:
+            g = canonical_group(r[3])
+            if not want_group(g):
+                continue
+            grp.setdefault(g, []).append(r)
+
+        for g in sorted(grp.keys(), key=group_rank):
+            st.subheader(g)
+            cols = st.columns(3)
+            for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
+                with cols[i % 3]:
+                    st.markdown(
+                        build_card(n, a, w, g, snip, lnk, ty, rating, photo),
+                        unsafe_allow_html=True,
+                    )
+
+        if not st.session_state.get("expanded"):
+            st.markdown("---")
+            if st.button("Expand Search"):
+                st.session_state["expanded"] = True
+                run_search(limit=None)
+                safe_rerun()
+    else:
+        st.info("No prix fixe menus stored yet for this location.")
