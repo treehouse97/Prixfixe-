@@ -8,3 +8,5 @@ streamlit-js-eval
 PyPDF2
 gspread
 google-auth
+pytesseract
+pillow
