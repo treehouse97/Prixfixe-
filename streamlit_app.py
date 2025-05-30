@@ -5,9 +5,6 @@ from typing import List
 import streamlit as st
 from streamlit_lottie import st_lottie
 
-# Page config MUST be first Streamlit command
-st.set_page_config("The Fixe", "🍽", layout="wide")
-
 from scraper import (
     fetch_website_text,
     detect_prix_fixe_detailed,
@@ -16,85 +13,44 @@ from scraper import (
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 from cache import get_cached_text, set_cached_text
-from sheets_cache import get_worksheet
 
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ----------------------------
+# Set config (MUST be first)
+# ----------------------------
+st.set_page_config("The Fixe", "🍽", layout="wide")
+
+# ----------------------------
+# Google Sheets Setup
+# ----------------------------
+scope = ["https://www.googleapis.com/auth/spreadsheets"]
+credentials = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"],
+    scopes=scope
+)
+client = gspread.authorize(credentials)
+spreadsheet = client.open_by_url("https://docs.google.com/spreadsheets/d/10j8gkxcrBc8vCi3nWkLPnx9Bab4mhj-Gu91Pss3QLoQ/edit")
+sheet = spreadsheet.sheet1
+
+def save_to_sheet(place_id: str, text: str):
+    try:
+        sheet.append_row([place_id, text])
+    except Exception as e:
+        st.error(f"Failed to write to sheet: {e}")
+
+# ----------------------------
+# Logging
+# ----------------------------
 logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
 log = logging.getLogger("prix_fixe_debug")
 
-# Read a cell from the connected Google Sheet
-ws = get_worksheet()
-value = ws.acell("A1").value
-st.write("A1:", value)
-
-DEAL_GROUPS = {
-    "Prix Fixe": {
-        "prix fixe", "pre fixe", "price fixed",
-        "fixed menu", "set menu", "tasting menu",
-        "multi-course", "3-course",
-    },
-    "Lunch Special": {"lunch special", "complete lunch"},
-    "Specials": {"specials", "special menu", "weekly special"},
-    "Deals": {"combo deal", "value menu", "deals"},
-}
-_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
-
-def process_place(place_id: str, website_url: str):
-    cached = get_cached_text(place_id)
-    if cached:
-        print(f"[CACHE HIT] {place_id}")
-        return cached
-    else:
-        print(f"[CACHE MISS] {place_id}")
-        text = fetch_website_text(website_url)
-        set_cached_text(place_id, text)
-        return text
-
-def canonical_group(label: str) -> str:
-    l = label.lower()
-    for g, synonyms in DEAL_GROUPS.items():
-        if any(s in l for s in synonyms):
-            return g
-    return label.title()
-
-def group_rank(g: str) -> int:
-    return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
-
-def safe_rerun():
-    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
-
-def clean_utf8(s: str) -> str:
-    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
-
-def load_lottie(path: str):
-    try:
-        with open(path, "r") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return None
-
-def nice_types(tp: List[str]) -> List[str]:
-    banned = {
-        "restaurant", "food", "point_of_interest", "establishment",
-        "store", "bar", "meal_takeaway", "meal_delivery",
-    }
-    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
-
-def first_review(pid: str) -> str:
-    try:
-        revs = (place_details(pid, st.session_state["db_file"]).get("reviews") or [])
-        txt = revs[0].get("text", "") if revs else ""
-        txt = re.sub(r"\s+", " ", txt).strip()
-        return (txt[:100] + "…") if len(txt) > 100 else txt
-    except Exception:
-        return ""
-
-def review_link(pid: str) -> str:
-    return f"https://search.google.com/local/reviews?placeid={pid}"
-
+# ----------------------------
+# Local Cache Schema
+# ----------------------------
 if "db_file" not in st.session_state:
-    st.session_state["db_file"] = os.path.join(
-        tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db"
-    )
+    st.session_state["db_file"] = os.path.join(tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"] = False
 
 DB_FILE = st.session_state["db_file"]
@@ -132,41 +88,76 @@ def ensure_schema():
     except sqlite3.OperationalError:
         init_db()
 
+# ----------------------------
+# Utility Functions
+# ----------------------------
 def store_rows(rows):
     with sqlite3.connect(DB_FILE) as c:
-        c.executemany(
-            """
+        c.executemany("""
             INSERT OR IGNORE INTO restaurants
             (name,address,website,has_prix_fixe,label,raw_text,
              snippet,review_link,types,location,rating,photo_ref)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-            rows,
-        )
+        """, rows)
 
 def fetch_records(loc):
     with sqlite3.connect(DB_FILE) as c:
-        return c.execute(
-            """
+        return c.execute("""
             SELECT name,address,website,label,snippet,review_link,
                    types,rating,photo_ref
             FROM restaurants WHERE has_prix_fixe=1 AND location=?
-        """,
-            (loc,),
-        ).fetchall()
+        """, (loc,)).fetchall()
 
 def prioritize(places):
-    hits = {
-        "bistro", "brasserie", "trattoria", "tavern",
-        "grill", "prix fixe", "pre fixe", "ristorante",
-    }
-    return sorted(
-        places,
-        key=lambda p: -1
-        if any(k in p.get("name", "").lower() for k in hits)
-        else 0,
-    )
+    hits = {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}
+    return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in hits) else 0)
 
+def safe_rerun():
+    (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
+
+def clean_utf8(s: str) -> str:
+    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
+
+def nice_types(tp: List[str]) -> List[str]:
+    banned = {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}
+    return [t.replace("_", " ").title() for t in tp if t not in banned][:3]
+
+def first_review(pid: str) -> str:
+    try:
+        revs = (place_details(pid, st.session_state["db_file"]).get("reviews") or [])
+        txt = revs[0].get("text", "") if revs else ""
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return (txt[:100] + "…") if len(txt) > 100 else txt
+    except Exception:
+        return ""
+
+def review_link(pid: str) -> str:
+    return f"https://search.google.com/local/reviews?placeid={pid}"
+
+# ----------------------------
+# Classification Logic
+# ----------------------------
+DEAL_GROUPS = {
+    "Prix Fixe": {"prix fixe", "pre fixe", "price fixed", "fixed menu", "set menu", "tasting menu", "multi-course", "3-course"},
+    "Lunch Special": {"lunch special", "complete lunch"},
+    "Specials": {"specials", "special menu", "weekly special"},
+    "Deals": {"combo deal", "value menu", "deals"},
+}
+_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
+
+def canonical_group(label: str) -> str:
+    l = label.lower()
+    for g, synonyms in DEAL_GROUPS.items():
+        if any(s in l for s in synonyms):
+            return g
+    return label.title()
+
+def group_rank(g: str) -> int:
+    return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
+
+# ----------------------------
+# Main Detection + Write
+# ----------------------------
 def process_place(place, loc):
     name, addr = place["name"], place["vicinity"]
     web = place.get("website") or place.get("menu_url")
@@ -176,55 +167,37 @@ def process_place(place, loc):
     g_types = place.get("types", [])
 
     with sqlite3.connect(DB_FILE) as c:
-        if c.execute(
-            """SELECT 1 FROM restaurants
-               WHERE name=? AND address=? AND location=?""",
-            (name, addr, loc),
-        ).fetchone():
-            log.info(f"{name} • skipped (already processed)")
+        if c.execute("SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?", (name, addr, loc)).fetchone():
             return None
 
     try:
         text = fetch_website_text(web) if web else ""
         text = clean_utf8(text)
+        save_to_sheet(pid, text)
         matched, lbl = detect_prix_fixe_detailed(text)
         if matched:
-            m = re.search(PATTERNS[lbl], text, re.IGNORECASE)
-            trigger = m.group(0) if m else lbl
-            log.info(f"{name} • triggered by “{trigger}” → {lbl}")
+            trigger = re.search(PATTERNS[lbl], text, re.IGNORECASE)
             snippet = first_review(pid)
             types = ", ".join(nice_types(g_types))
             link = review_link(pid)
-            log.info(f"{name} • card rendered")
             return (
-                name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo,
+                name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo
             )
-        else:
-            log.info(f"{name} • skipped (no qualifying phrases found)")
     except Exception as e:
         log.info(f"{name} • skipped (error: {e})")
     return None
 
+# ----------------------------
+# Display & Interaction
+# ----------------------------
 def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
-    chips = "".join(
-        f'<span class="chip">{t}</span>'
-        for t in (types_txt.split(", ") if types_txt else [])
-    )
-    chips_block = f'<div class="chips">{chips}</div>' if chips else ""
-    photo_tag = (
-        f'<img src="https://maps.googleapis.com/maps/api/place/photo'
-        f'?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">'
-        if photo else ""
-    )
-    snippet_ht = (
-        f'<p class="snippet">💬 {snippet} '
-        f'<a href="{link}" target="_blank">Read&nbsp;more</a></p>'
-        if snippet else ""
-    )
+    chips = "".join(f'<span class="chip">{t}</span>' for t in (types_txt.split(", ") if types_txt else []))
+    photo_tag = f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else ""
+    snippet_ht = f'<p class="snippet">💬 {snippet} <a href="{link}" target="_blank">Read&nbsp;more</a></p>' if snippet else ""
     rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
     return (
         '<div class="card">' + photo_tag + '<div class="body">'
-        f'<span class="badge">{lbl}</span>{chips_block}'
+        f'<span class="badge">{lbl}</span><div class="chips">{chips}</div>'
         f'<div class="title">{name}</div>{snippet_ht}'
         f'<div class="addr">{addr}</div>{rating_ht}'
         f'<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
@@ -243,16 +216,17 @@ st.markdown(
     .snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}
     .snippet a{color:#0d6efd;text-decoration:none}
     .chips{margin-bottom:4px}
-    .chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
-          padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
+    .chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
     .addr{font-size:.9rem;color:#555;margin-bottom:6px}
     .rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-    .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-           padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
+    .badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
     </style>""",
     unsafe_allow_html=True,
 )
 
+# ----------------------------
+# Main App Logic
+# ----------------------------
 ensure_schema()
 st.title("The Fixe")
 
@@ -266,7 +240,7 @@ deal_options = ["Any deal"] + _DISPLAY_ORDER
 selected_deals = st.multiselect("Deal type (optional)", deal_options, default=["Any deal"])
 
 def want_group(g: str) -> bool:
-    return ("Any deal" in selected_deals) or (g in selected_deals)
+    return "Any deal" in selected_deals or g in selected_deals
 
 def run_search(limit):
     status = st.empty()
@@ -275,7 +249,7 @@ def run_search(limit):
     cook = load_lottie("Animation - 1748132250829.json")
     if cook:
         with anim.container():
-            st_lottie(cook, height=260, key=f"cook-{time.time()}")
+            st_lottie(cook, height=260)
 
     try:
         raw = text_search_restaurants(location, DB_FILE)
@@ -289,11 +263,10 @@ def run_search(limit):
     except Exception as e:
         st.error(f"Search failed: {e}")
 
-    status.markdown("### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True)
     done = load_lottie("Finished.json")
     if done:
         with anim.container():
-            st_lottie(done, height=260, key=f"done-{time.time()}")
+            st_lottie(done, height=260)
 
 if st.button("Search"):
     st.session_state.update(searched=True, expanded=False)
@@ -305,25 +278,14 @@ if st.session_state.get("searched"):
         grp = {}
         for r in recs:
             g = canonical_group(r[3])
-            if not want_group(g):
-                continue
-            grp.setdefault(g, []).append(r)
+            if want_group(g):
+                grp.setdefault(g, []).append(r)
 
-        for g in sorted(grp.keys(), key=group_rank):
+        for g in sorted(grp, key=group_rank):
             st.subheader(g)
             cols = st.columns(3)
             for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
                 with cols[i % 3]:
-                    st.markdown(
-                        build_card(n, a, w, g, snip, lnk, ty, rating, photo),
-                        unsafe_allow_html=True,
-                    )
-
-        if not st.session_state.get("expanded"):
-            st.markdown("---")
-            if st.button("Expand Search"):
-                st.session_state["expanded"] = True
-                run_search(limit=None)
-                safe_rerun()
+                    st.markdown(build_card(n, a, w, g, snip, lnk, ty, rating, photo), unsafe_allow_html=True)
     else:
         st.info("No prix fixe menus stored yet for this location.")
