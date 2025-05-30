@@ -269,7 +269,7 @@ def run_search(limit):
             st_lottie(cook, height=260, key=f"cook-{time.time()}")
 
     try:
-        raw = text_search_restaurants(location)
+        raw = text_search_restaurants(location, DB_FILE)
         cand = [p for p in raw if p.get("website") or p.get("menu_url")]
         for p in raw:
             if not (p.get("website") or p.get("menu_url")):
