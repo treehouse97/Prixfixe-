@@ -12,7 +12,7 @@ from scraper import (
 )
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
-Import pathlib
+import pathlib
 
 logging.basicConfig(
     level=logging.INFO,
