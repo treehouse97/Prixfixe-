@@ -7,6 +7,7 @@ from PIL import Image
 from io import BytesIO
 import pytesseract
 import fitz  # PyMuPDF
+import hashlib
 
 # ──────────────── Keyword patterns ───────────────────────
 PATTERNS = {
@@ -74,20 +75,28 @@ def _safe_fetch_and_match(url):
         url_cache[url] = ("", None)
         return "", None
 
+def _hash(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
 # ──────────────── Main function ──────────────────────────
 def fetch_website_text(url: str) -> str:
-    visited, collected = set(), ""
+    visited = set()
+    seen_hashes = set()
+    collected = []
 
     try:
         base_resp = requests.get(url, headers=HEADERS, timeout=10)
         base_resp.raise_for_status()
     except Exception:
-        return collected
+        return ""
 
     base_text, hit = _extract_text_and_match(base_resp, url)
-    collected += base_text
+    h = _hash(base_text)
+    if base_text and h not in seen_hashes:
+        collected.append(base_text)
+        seen_hashes.add(h)
     if hit:
-        return collected.strip()
+        return " ".join(collected).strip()
 
     soup = BeautifulSoup(base_resp.text, "html.parser")
     base_domain = urlparse(url).netloc
@@ -107,18 +116,22 @@ def fetch_website_text(url: str) -> str:
         elif tag.name == "a":
             html_links.append(link)
 
-    link_queue = media_links[:5] + html_links  # prioritize images/PDFs
+    link_queue = media_links[:5] + html_links
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {ex.submit(_safe_fetch_and_match, link): link for link in link_queue}
         for future in as_completed(futures):
             sub_text, hit = future.result()
-            collected += " " + sub_text
+            h = _hash(sub_text)
+            if sub_text and h not in seen_hashes:
+                collected.append(sub_text)
+                seen_hashes.add(h)
             if hit:
                 break
 
-    return collected.strip()
+    return " ".join(collected).strip()
 
+# ──────────────── Pattern Detection ──────────────────────
 def detect_prix_fixe_detailed(text: str):
     for label, pattern in PATTERNS.items():
         if re.search(pattern, text, re.IGNORECASE):
