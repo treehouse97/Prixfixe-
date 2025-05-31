@@ -1,4 +1,3 @@
-
 import streamlit as st
 from streamlit_lottie import st_lottie
 import json, os, re, sqlite3, tempfile, time, uuid, logging
@@ -50,6 +49,14 @@ if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"] = False
 
+if "sheet_cache" not in st.session_state:
+    try:
+        sheet_data = sheet.get_all_values()[1:]  # Skip header
+        st.session_state["sheet_cache"] = set((r[0], r[1], r[8]) for r in sheet_data)  # name, address, location
+    except Exception as e:
+        log.error(f"Sheet cache init failed: {e}")
+        st.session_state["sheet_cache"] = set()
+
 DB_FILE = st.session_state["db_file"]
 
 SCHEMA = """
@@ -94,32 +101,31 @@ def write_to_sheet(rows):
     if not rows:
         return
     try:
-        existing = sheet.get_all_values()[1:]  # Skip header
-        existing_keys = set((r[0], r[1], r[8]) for r in existing)  # (name, address, location)
-
         for r in rows:
-            key = (r[0], r[1], r[9])  # (name, address, location)
-            if key in existing_keys:
+            key = (r[0], r[1], r[9])
+            if key in st.session_state["sheet_cache"]:
                 log.info(f"{r[0]} • skipped (already in Google Sheet)")
                 continue
 
-            summary = (r[5] or "")[:49000]  # Google Sheets cell limit
+            summary = (r[5] or "")[:49000]
             sheet.append_row([
                 r[0], r[1], r[2], r[4], summary,
                 r[6], r[7], r[8], r[9], str(r[10])
             ], value_input_option="USER_ENTERED")
+            st.session_state["sheet_cache"].add(key)
             log.info(f"[SHEET SET] {r[0]}")
     except Exception as e:
         log.error(f"Sheet write error: {e}")
 
 def clear_sheet_except_header():
     try:
-        sheet.resize(rows=1)  # Keep only the first row (header)
+        sheet.resize(rows=1)
+        st.session_state["sheet_cache"].clear()
         log.info("Sheet cleared (except header row).")
     except Exception as e:
         log.error(f"Failed to clear sheet: {e}")
-        
         st.error(f"Failed to clear sheet: {e}")
+
 def prioritize(places):
     return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}) else 0)
 
@@ -128,6 +134,10 @@ def process_place(place, loc):
     web = place.get("website") or place.get("menu_url")
     rating, photo = place.get("rating"), place.get("photo_ref")
     pid, g_types = place.get("place_id"), place.get("types", [])
+
+    if (name, addr, loc) in st.session_state["sheet_cache"]:
+        log.info(f"{name} • skipped (cached)")
+        return None
 
     with sqlite3.connect(DB_FILE) as c:
         if c.execute("SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?", (name, addr, loc)).fetchone():
@@ -183,10 +193,10 @@ if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
     safe_rerun()
-    
+
 if st.button("Clear Google Sheet (except header)"):
     clear_sheet_except_header()
-    
+
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 selected_deals = st.multiselect("Deal type (optional)", ["Any deal"] + _DISPLAY_ORDER, default=["Any deal"])
 def want_group(g): return ("Any deal" in selected_deals) or (g in selected_deals)
