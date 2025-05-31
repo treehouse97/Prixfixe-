@@ -1,178 +1,133 @@
+# places_api.py
+import time
+from typing import List, Dict
+
+import requests
 import streamlit as st
-from streamlit_lottie import st_lottie
-import json, os, re, sqlite3, tempfile, time, uuid, logging
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Tuple
-
-import gspread
-from google.oauth2.service_account import Credentials
-
-from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from settings import GOOGLE_API_KEY
-from places_api import text_search_restaurants, place_details
 
-# ─────────────────── Google Sheets Setup ────────────────────
-scope = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"],
-    scopes=scope
-)
-client = gspread.authorize(credentials)
-SHEET_ID = "1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0"
-sheet = client.open_by_key(SHEET_ID).sheet1
+TEXT_URL   = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+DETAIL_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# ─────────────────── Streamlit Setup ────────────────────────
-st.set_page_config("The Fixe", "🍽", layout="wide")
-st.title("The Fixe")
 
-logging.basicConfig(level=logging.INFO, format="The Fixe DEBUG » %(message)s", force=True)
-log = logging.getLogger("prix_fixe_debug")
+# ────────────────── cache initialization ─────────────────────────────────────
+def initialize_cache():
+    if "sheet_cache" not in st.session_state:
+        st.session_state["sheet_cache"] = load_cache_from_sheet()
 
-DEAL_GROUPS = {
-    "Prix Fixe": {"prix fixe", "pre fixe", "price fixed", "fixed menu", "set menu", "tasting menu", "multi-course", "3-course"},
-    "Lunch Special": {"lunch special", "complete lunch"},
-    "Specials": {"specials", "special menu", "weekly special"},
-    "Deals": {"combo deal", "value menu", "deals"},
-}
-_DISPLAY_ORDER = ["Prix Fixe", "Lunch Special", "Specials", "Deals"]
 
-def canonical_group(label): return next((g for g, s in DEAL_GROUPS.items() if any(k in label.lower() for k in s)), label.title())
-def group_rank(g): return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
-def safe_rerun(): (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
-def clean_utf8(s): return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
-def load_lottie(path): return json.load(open(path)) if os.path.exists(path) else None
-def nice_types(tp): return [t.replace("_", " ").title() for t in tp if t not in {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}][:3]
-def first_review(pid): return re.sub(r"\s+", " ", (place_details(pid).get("reviews") or [{}])[0].get("text", "")).strip()[:100] + "…"
-def review_link(pid): return f"https://search.google.com/local/reviews?placeid={pid}"
+def load_cache_from_sheet() -> Dict[str, Dict]:
+    """
+    Loads existing place data from a Google Sheet into memory.
+    Assumes each row corresponds to a restaurant with a unique place_id.
+    Returns a dict keyed by place_id.
+    """
+    import gspread
+    gc = gspread.service_account()
+    sh = gc.open("YourSheetName")  # replace with your actual sheet
+    worksheet = sh.sheet1
+    records = worksheet.get_all_records()
 
-if "db_file" not in st.session_state:
-    st.session_state["db_file"] = os.path.join(tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
-    st.session_state["searched"] = False
-    st.session_state["sheet_cache"] = set()
+    cache = {}
+    for row in records:
+        pid = row.get("place_id")
+        if pid:
+            cache[pid] = {
+                "place_id": pid,
+                "name":     row.get("name", ""),
+                "vicinity": row.get("vicinity", ""),
+                "website":  row.get("website"),
+                "rating":   row.get("rating"),
+                "photo_ref": row.get("photo_ref"),
+                "types":    row.get("types", "").split(",") if row.get("types") else [],
+            }
+    return cache
 
-DB_FILE = st.session_state["db_file"]
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS restaurants (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT, address TEXT, website TEXT,
-  has_prix_fixe INTEGER, label TEXT,
-  raw_text TEXT,
-  snippet TEXT,
-  review_link TEXT,
-  types TEXT,
-  location TEXT, rating REAL, photo_ref TEXT,
-  UNIQUE(name, address, location)
-);
-"""
+# ────────────────── public helpers ───────────────────────────────────────────
+def text_search_restaurants(location_name: str) -> List[Dict]:
+    """
+    Google *Text Search* → returns a list of places that have a website.
+    Each dict contains: place_id, name, vicinity, website, rating,
+                        photo_ref, types
+    Uses session cache to avoid redundant lookups.
+    """
+    initialize_cache()
+    params = {"query": f"restaurants in {location_name}", "key": GOOGLE_API_KEY}
+    seen, results = set(), []
 
-def init_db():
-    with sqlite3.connect(DB_FILE) as c: c.executescript("DROP TABLE IF EXISTS restaurants;" + SCHEMA)
+    while True:
+        data = _get_json(TEXT_URL, params)
 
-def ensure_schema():
-    if not os.path.exists(DB_FILE): init_db()
-    else:
-        try: sqlite3.connect(DB_FILE).execute("SELECT 1 FROM restaurants LIMIT 1")
-        except sqlite3.OperationalError: init_db()
+        for item in data.get("results", []):
+            pid = item.get("place_id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
 
-def populate_db_from_sheet():
-    try:
-        rows = sheet.get_all_values()[1:]  # skip header
-        with sqlite3.connect(DB_FILE) as c:
-            for r in rows:
-                st.session_state["sheet_cache"].add((r[0], r[1], r[8]))  # (name, address, location)
-                c.execute("""
-                    INSERT OR IGNORE INTO restaurants
-                    (name,address,website,label,raw_text,snippet,review_link,types,location,rating,photo_ref,has_prix_fixe)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,1)
-                """, (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], float(r[9]) if r[9] else None, None))
-    except Exception as e:
-        log.error(f"Sheet preload failed: {e}")
-
-def store_rows(rows):
-    with sqlite3.connect(DB_FILE) as c:
-        c.executemany("""
-            INSERT OR IGNORE INTO restaurants
-            (name,address,website,has_prix_fixe,label,raw_text,
-             snippet,review_link,types,location,rating,photo_ref)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
-
-def fetch_records(loc):
-    with sqlite3.connect(DB_FILE) as c:
-        return c.execute("""
-            SELECT name,address,website,label,snippet,review_link,
-                   types,rating,photo_ref
-            FROM restaurants WHERE has_prix_fixe=1 AND location=?
-        """, (loc,)).fetchall()
-
-def write_to_sheet(rows):
-    if not rows:
-        return
-    try:
-        for r in rows:
-            key = (r[0], r[1], r[9])  # (name, address, location)
-            if key in st.session_state["sheet_cache"]:
-                log.info(f"{r[0]} • skipped (already in Google Sheet)")
+            # Check if already cached
+            if pid in st.session_state["sheet_cache"]:
+                results.append(st.session_state["sheet_cache"][pid])
                 continue
 
-            summary = (r[5] or "")[:49000]  # Google Sheets cell limit
-            sheet.append_row([
-                r[0], r[1], r[2], r[4], summary,
-                r[6], r[7], r[8], r[9], str(r[10])
-            ], value_input_option="USER_ENTERED")
-            st.session_state["sheet_cache"].add(key)
-            log.info(f"[SHEET SET] {r[0]}")
-    except Exception as e:
-        log.error(f"Sheet write error: {e}")
+            # Fetch details from API
+            det = _fetch_details(pid)
+            website = det.get("website")
+            if not website:
+                continue
 
-def clear_sheet_except_header():
-    try:
-        sheet.resize(rows=1)
-        log.info("Sheet cleared (except header row).")
-        st.session_state["sheet_cache"].clear()
-    except Exception as e:
-        log.error(f"Failed to clear sheet: {e}")
-        st.error(f"Failed to clear sheet: {e}")
+            photos = det.get("photos", [])
+            entry = {
+                "place_id": pid,
+                "name":     det.get("name", ""),
+                "vicinity": det.get("vicinity", ""),
+                "website":  website,
+                "rating":   det.get("rating"),
+                "photo_ref": photos[0]["photo_reference"] if photos else None,
+                "types":    item.get("types", []),
+            }
 
-def prioritize(places):
-    return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}) else 0)
+            # Update both results and cache
+            results.append(entry)
+            st.session_state["sheet_cache"][pid] = entry
 
-def process_place(place, loc):
-    name, addr = place["name"], place["vicinity"]
-    web = place.get("website") or place.get("menu_url")
-    rating, photo = place.get("rating"), place.get("photo_ref")
-    pid, g_types = place.get("place_id"), place.get("types", [])
-    key = (name, addr, loc)
+        nxt = data.get("next_page_token")
+        if not nxt:
+            break
+        time.sleep(2)
+        params = {"pagetoken": nxt, "key": GOOGLE_API_KEY}
 
-    if key in st.session_state["sheet_cache"]:
-        log.info(f"{name} • skipped (already processed)")
-        return None
+    return results
 
-    try:
-        text = clean_utf8(fetch_website_text(web)) if web else ""
-        matched, lbl = detect_prix_fixe_detailed(text)
-        if matched:
-            snippet, link = first_review(pid), review_link(pid)
-            types = ", ".join(nice_types(g_types))
-            return (name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo)
-        else:
-            log.info(f"{name} • skipped (no qualifying phrases found)")
-    except Exception as e:
-        log.info(f"{name} • skipped (error: {e})")
-    return None
 
-def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
-    chips = "".join(f'<span class="chip">{t}</span>' for t in (types_txt.split(", ") if types_txt else []))
-    photo_tag = f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else ""
-    snippet_ht = f'<p class="snippet">💬 {snippet} <a href="{link}" target="_blank">Read&nbsp;more</a></p>' if snippet else ""
-    rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
-    return (
-        '<div class="card">' + photo_tag + '<div class="body">'
-        f'<span class="badge">{lbl}</span><div class="chips">{chips}</div>'
-        f'<div class="title">{name}</div>{snippet_ht}<div class="addr">{addr}</div>'
-        f'{rating_ht}<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
+def place_details(place_id: str) -> Dict:
+    """
+    Lightweight Google *Place Details* wrapper.
+    Fetches only `reviews` and `types` – sufficient to build a promo snippet.
+    """
+    fields = "reviews,types"
+    data = _get_json(
+        DETAIL_URL,
+        {"place_id": place_id, "fields": fields, "key": GOOGLE_API_KEY},
     )
+    return data.get("result", {})
 
-ensure_schema()
-populate_db_from_sheet()
+
+# ────────────────── internal helpers ─────────────────────────────────────────
+def _fetch_details(pid: str) -> Dict:
+    """Details call used internally by the Text‑Search routine."""
+    fields = "name,vicinity,website,rating,photos"
+    data = _get_json(
+        DETAIL_URL,
+        {"place_id": pid, "fields": fields, "key": GOOGLE_API_KEY},
+    )
+    return data.get("result", {})
+
+
+def _get_json(url: str, params: Dict) -> Dict:
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
