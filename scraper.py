@@ -106,8 +106,18 @@ def fetch_website_text(url: str) -> str:
     base_dom = urlparse(url).netloc
 
     html_links, media_links = [], []
-    for a in soup.find_all("a", href=True):
-        link = urljoin(url, a["href"])
+    # Extract links from <a href=...> and <img src=...>
+for tag in soup.find_all(["a", "img"]):
+    link_attr = "href" if tag.name == "a" else "src"
+    if tag.has_attr(link_attr):
+        link = urljoin(url, tag[link_attr])
+        if urlparse(link).netloc != base_dom or link in visited:
+            continue
+        visited.add(link)
+        if link.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
+            media_links.append(link)
+        elif tag.name == "a":
+            html_links.append(link)
         if urlparse(link).netloc != base_dom or link in visited:
             continue
         visited.add(link)
