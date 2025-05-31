@@ -11,7 +11,6 @@ from scraper import fetch_website_text, detect_prix_fixe_detailed, PATTERNS
 from settings import GOOGLE_API_KEY
 from places_api import text_search_restaurants, place_details
 
-import hashlib
 # ─────────────────── Google Sheets Setup ────────────────────
 scope = ["https://www.googleapis.com/auth/spreadsheets"]
 credentials = Credentials.from_service_account_info(
@@ -90,35 +89,27 @@ def fetch_records(loc):
             FROM restaurants WHERE has_prix_fixe=1 AND location=?
         """, (loc,)).fetchall()
 
-def hash_id(name, address, location):
-    base = f"{name}|{address}|{location}".lower()
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
-
 def write_to_sheet(rows):
-    if not rows:
-        return
+    if not rows: return
     try:
-        existing = sheet.get_all_values()
-        existing_ids = {
-            row[-1] for row in existing[1:]
-            if row and len(row) >= 11
-        }
-
         for r in rows:
-            uid = hash_id(r[0], r[1], r[9])  # name, address, location
-            if uid in existing_ids:
-                log.info(f"[SHEET SKIP] {r[0]} (already exists)")
-                continue
-
-            summary = (r[5] or "")[:49000]  # raw_text capped for cell limit
+            summary = (r[5] or "")[:49000]  # raw_text trimmed to max 50k
             sheet.append_row([
                 r[0], r[1], r[2], r[4], summary,
-                r[6], str(r[7]), r[8], r[9], str(r[10]), uid
+                r[6], r[7], r[8], r[9], str(r[10])
             ], value_input_option="USER_ENTERED")
             log.info(f"[SHEET SET] {r[0]}")
     except Exception as e:
         log.error(f"Sheet write error: {e}")
 
+def clear_sheet_except_header():
+    try:
+        sheet.resize(rows=1)  # Keep only the first row (header)
+        log.info("Sheet cleared (except header row).")
+    except Exception as e:
+        log.error(f"Failed to clear sheet: {e}")
+        
+        st.error(f"Failed to clear sheet: {e}")
 def prioritize(places):
     return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}) else 0)
 
@@ -182,7 +173,10 @@ if st.button("Reset Database"):
     init_db()
     st.session_state["searched"] = False
     safe_rerun()
-
+    
+if st.button("Clear Google Sheet (except header)"):
+    clear_sheet_except_header()
+    
 location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
 selected_deals = st.multiselect("Deal type (optional)", ["Any deal"] + _DISPLAY_ORDER, default=["Any deal"])
 def want_group(g): return ("Any deal" in selected_deals) or (g in selected_deals)
