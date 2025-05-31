@@ -50,12 +50,12 @@ if "db_file" not in st.session_state:
     st.session_state["searched"] = False
 
 if "sheet_cache" not in st.session_state:
+    st.session_state["sheet_cache"] = set()
     try:
         sheet_data = sheet.get_all_values()[1:]  # Skip header
-        st.session_state["sheet_cache"] = set((r[0], r[1], r[8]) for r in sheet_data)  # name, address, location
+        st.session_state["sheet_cache"].update((r[0], r[1], r[8]) for r in sheet_data)
     except Exception as e:
         log.error(f"Sheet cache init failed: {e}")
-        st.session_state["sheet_cache"] = set()
 
 DB_FILE = st.session_state["db_file"]
 
