@@ -15,21 +15,21 @@ MAX_HTML_LINKS = 20
 MAX_DEPTH = 1
 
 PATTERNS = {
-    "prix fixe":      r"prix[\s\-]*fixe",
-    "pre fixe":       r"pre[\s\-]*fixe",
-    "price fixed":    r"price[\s\-]*fixed",
-    "3-course":       r"(three|3)[\s\-]*(course|courses)",
-    "multi-course":   r"\d+\s*course\s*meal",
-    "fixed menu":     r"(fixed|set)[\s\-]*(menu|meal)",
-    "tasting menu":   r"tasting\s*menu",
-    "special menu":   r"special\s*(menu|offer|deal)",
-    "complete lunch": r"complete\s*(lunch|dinner)\s*special",
-    "lunch special":  r"(lunch|dinner)\s*special\s*(menu|offer)?",
-    "specials":       r"(today'?s|weekday|weekend)?\s*specials",
-    "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
-    "combo deal":     r"(combo|combination)\s*(deal|meal|menu)",
-    "value menu":     r"value\s*(menu|deal|offer)",
-    "deals":          r"\bdeals?\b",
+    "prix fixe":      r"p[\W_]*r[\W_]*i[\W_]*x[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
+    "pre fixe":       r"p[\W_]*r[\W_]*e[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
+    "price fixed":    r"p[\W_]*r[\W_]*i[\W_]*c[\W_]*e[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e[\W_]*d",
+    "3-course":       r"(three|3)[\W_]*[\s\-]*c[\W_]*o[\W_]*u[\W_]*r[\W_]*s[\W_]*e[\W_]*s?",
+    "multi-course":   r"\d+[\W_]*[\s\-]*c[\W_]*o[\W_]*u[\W_]*r[\W_]*s[\W_]*e[\W_]*[\s\-]*m[\W_]*e[\W_]*a[\W_]*l",
+    "fixed menu":     r"(f[\W_]*i[\W_]*x[\W_]*e[\W_]*d|s[\W_]*e[\W_]*t)[\s\-]*m[\W_]*e[\W_]*n[\W_]*u",
+    "tasting menu":   r"t[\W_]*a[\W_]*s[\W_]*t[\W_]*i[\W_]*n[\W_]*g[\s\-]*m[\W_]*e[\W_]*n[\W_]*u",
+    "special menu":   r"s[\W_]*p[\W_]*e[\W_]*c[\W_]*i[\W_]*a[\W_]*l[\s\-]*(menu|offer|deal)",
+    "complete lunch": r"c[\W_]*o[\W_]*m[\W_]*p[\W_]*l[\W_]*e[\W_]*t[\W_]*e[\s\-]*(lunch|dinner)[\s\-]*special",
+    "lunch special":  r"(lunch|dinner)[\s\-]*special[\s\-]*(menu|offer)?",
+    "specials":       r"(today'?s|weekday|weekend)?[\s\-]*specials",
+    "weekly special": r"(weekly|weeknight|weekend)[\s\-]*(specials?|menu)",
+    "combo deal":     r"(combo|combination)[\s\-]*(deal|meal|menu)",
+    "value menu":     r"value[\s\-]*(menu|deal|offer)",
+    "deals":          r"\bdeals?\b"
 }
 
 url_cache = {}
