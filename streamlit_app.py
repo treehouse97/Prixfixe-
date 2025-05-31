@@ -90,10 +90,19 @@ def fetch_records(loc):
         """, (loc,)).fetchall()
 
 def write_to_sheet(rows):
-    if not rows: return
+    if not rows:
+        return
     try:
+        existing = sheet.get_all_values()[1:]  # Skip header
+        existing_keys = set((r[0], r[1], r[8]) for r in existing)  # (name, address, location)
+
         for r in rows:
-            summary = (r[5] or "")[:49000]  # raw_text trimmed to max 50k
+            key = (r[0], r[1], r[9])  # (name, address, location)
+            if key in existing_keys:
+                log.info(f"{r[0]} • skipped (already in Google Sheet)")
+                continue
+
+            summary = (r[5] or "")[:49000]  # Google Sheets cell limit
             sheet.append_row([
                 r[0], r[1], r[2], r[4], summary,
                 r[6], r[7], r[8], r[9], str(r[10])
