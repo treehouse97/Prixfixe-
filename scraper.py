@@ -12,7 +12,7 @@ import fitz  # PyMuPDF
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 MAX_MEDIA_LINKS = 3
 MAX_HTML_LINKS = 20
-MAX_DEPTH = 1
+MAX_DEPTH = 2
 
 PATTERNS = {
     "prix fixe":      r"p[\W_]*r[\W_]*i[\W_]*x[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
