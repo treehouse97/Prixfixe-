@@ -10,5 +10,3 @@ gspread
 google-auth
 pytesseract
 pillow
-tesseract-ocr
-poppler-utils
