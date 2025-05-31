@@ -11,25 +11,25 @@ from io import BytesIO
 
 # ──────────────── Keyword patterns ───────────────────────
 PATTERNS = {
-    "prix fixe":      r"p[\W_]*r[\W_]*i[\W_]*x[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
-    "pre fixe":       r"p[\W_]*r[\W_]*e[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
-    "price fixed":    r"p[\W_]*r[\W_]*i[\W_]*c[\W_]*e[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e[\W_]*d",
-    "3-course":       r"(three|3)[\W_]*[\s\-]*c[\W_]*o[\W_]*u[\W_]*r[\W_]*s[\W_]*e[\W_]*s?",
-    "multi-course":   r"\d+[\W_]*[\s\-]*c[\W_]*o[\W_]*u[\W_]*r[\W_]*s[\W_]*e[\W_]*[\s\-]*m[\W_]*e[\W_]*a[\W_]*l",
-    "fixed menu":     r"(f[\W_]*i[\W_]*x[\W_]*e[\W_]*d|s[\W_]*e[\W_]*t)[\s\-]*m[\W_]*e[\W_]*n[\W_]*u",
-    "tasting menu":   r"t[\W_]*a[\W_]*s[\W_]*t[\W_]*i[\W_]*n[\W_]*g[\s\-]*m[\W_]*e[\W_]*n[\W_]*u",
-    "special menu":   r"s[\W_]*p[\W_]*e[\W_]*c[\W_]*i[\W_]*a[\W_]*l[\s\-]*(menu|offer|deal)",
-    "complete lunch": r"c[\W_]*o[\W_]*m[\W_]*p[\W_]*l[\W_]*e[\W_]*t[\W_]*e[\s\-]*(lunch|dinner)[\s\-]*special",
-    "lunch special":  r"(lunch|dinner)[\s\-]*special[\s\-]*(menu|offer)?",
-    "specials":       r"(today'?s|weekday|weekend)?[\s\-]*specials",
-    "weekly special": r"(weekly|weeknight|weekend)[\s\-]*(specials?|menu)",
-    "combo deal":     r"(combo|combination)[\s\-]*(deal|meal|menu)",
-    "value menu":     r"value[\s\-]*(menu|deal|offer)",
-    "deals":          r"\bdeals?\b"
+    "prix fixe":      r"prix[\s\-]*fixe",
+    "pre fixe":       r"pre[\s\-]*fixe",
+    "price fixed":    r"price[\s\-]*fixed",
+    "3-course":       r"(three|3)[\s\-]*(course|courses)",
+    "multi-course":   r"\d+\s*course\s*meal",
+    "fixed menu":     r"(fixed|set)[\s\-]*(menu|meal)",
+    "tasting menu":   r"tasting\s*menu",
+    "special menu":   r"special\s*(menu|offer|deal)",
+    "complete lunch": r"complete\s*(lunch|dinner)\s*special",
+    "lunch special":  r"(lunch|dinner)\s*special\s*(menu|offer)?",
+    "specials":       r"(today'?s|weekday|weekend)?\s*specials",
+    "weekly special": r"(weekly|weeknight|weekend)\s*(specials?|menu)",
+    "combo deal":     r"(combo|combination)\s*(deal|meal|menu)",
+    "value menu":     r"value\s*(menu|deal|offer)",
+    "deals":          r"\bdeals?\b",
 }
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-url_cache = {}  # prevent duplicate URL requests
+url_cache = {}
 
 # ──────────────── Internal utilities ─────────────────────
 def _pdf_bytes_to_text(data: bytes) -> str:
@@ -42,14 +42,14 @@ def _pdf_bytes_to_text(data: bytes) -> str:
 def _image_bytes_to_text(data: bytes) -> str:
     try:
         img = Image.open(BytesIO(data))
-        return pytesseract.image_to_string(img).lower()
+        text = pytesseract.image_to_string(img).lower()
+        print("OCR TEXT:\n", text)  # TEMP DEBUG: View what OCR sees
+        return text
     except Exception:
         return ""
 
 def _extract_text_and_match(resp, src_url):
-    """Return (text, pattern_label | None)"""
     ctype = resp.headers.get("content-type", "").lower()
-
     if "pdf" in ctype or src_url.lower().endswith(".pdf"):
         text = _pdf_bytes_to_text(resp.content)
     elif "image" in ctype or src_url.lower().endswith((".jpg", ".jpeg", ".png")):
@@ -67,10 +67,8 @@ def _extract_text_and_match(resp, src_url):
     return text, None
 
 def _safe_fetch_and_match(url):
-    """Download + match (with caching)."""
     if url in url_cache:
         return url_cache[url]
-
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
@@ -81,16 +79,8 @@ def _safe_fetch_and_match(url):
         url_cache[url] = ("", None)
         return "", None
 
-# ──────────────── Public interface ───────────────────────
+# ──────────────── Public entry point ─────────────────────
 def fetch_website_text(url: str) -> str:
-    """
-    Crawl a restaurant website, extracting text from:
-    - the main page,
-    - internal HTML links,
-    - linked PDFs and JPG/PNG images (OCR),
-    - stopping early if a pattern is matched.
-    Returns all collected text.
-    """
     visited = set()
     collected = ""
 
@@ -107,28 +97,35 @@ def fetch_website_text(url: str) -> str:
 
     soup = BeautifulSoup(base_resp.text, "html.parser")
     base_domain = urlparse(url).netloc
-
     html_links, media_links = [], []
 
     for tag in soup.find_all(["a", "img"]):
-        attr = "href" if tag.name == "a" else "src"
-        if not tag.has_attr(attr):
+        attr = "href" if tag.name == "a" else None
+        if tag.name == "img":
+            for fallback in ["src", "data-src", "data-original"]:
+                if tag.has_attr(fallback):
+                    attr = fallback
+                    break
+
+        if not attr or not tag.has_attr(attr):
             continue
+
         link = urljoin(url, tag[attr])
         if urlparse(link).netloc != base_domain or link in visited:
             continue
         visited.add(link)
+
         if link.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
             media_links.append(link)
         elif tag.name == "a":
             html_links.append(link)
 
-    link_queue = media_links[:5] + html_links  # prioritize media
+    link_queue = media_links[:5] + html_links
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {ex.submit(_safe_fetch_and_match, link): link for link in link_queue}
-        for future in as_completed(futures):
-            sub_text, hit = future.result()
+        for fut in as_completed(futures):
+            sub_text, hit = fut.result()
             collected += " " + sub_text
             if hit:
                 break
