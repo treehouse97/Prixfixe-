@@ -1,17 +1,18 @@
+# scraper.py
 import re
-import requests
 from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+from bs4 import BeautifulSoup
 from PIL import Image
-from io import BytesIO
 import pytesseract
+from io import BytesIO
 import fitz  # PyMuPDF
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-MAX_MEDIA_LINKS = 8
-MAX_HTML_LINKS = 30
-MAX_DEPTH = 5
+MAX_MEDIA_LINKS = 3
+MAX_HTML_LINKS = 20
+MAX_DEPTH = 1
 
 PATTERNS = {
     "prix fixe":      r"prix[\s\-]*fixe",
@@ -33,6 +34,7 @@ PATTERNS = {
 
 url_cache = {}
 
+# ──────────────── Helpers ──────────────────────────────
 def _pdf_bytes_to_text(data: bytes) -> str:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -47,14 +49,12 @@ def _image_bytes_to_text(data: bytes) -> str:
     except Exception:
         return ""
 
-def _extract_text_and_match(resp, src_url):
+def _extract_text_and_match(resp, url):
     ctype = resp.headers.get("content-type", "").lower()
 
-    if "pdf" in ctype or src_url.lower().endswith(".pdf"):
+    if "pdf" in ctype or url.lower().endswith(".pdf"):
         text = _pdf_bytes_to_text(resp.content)
-    elif "image" in ctype or src_url.lower().endswith(
-        (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif")
-    ):
+    elif "image" in ctype or url.lower().endswith((".jpg", ".jpeg", ".png")):
         text = _image_bytes_to_text(resp.content)
     else:
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -71,16 +71,18 @@ def _extract_text_and_match(resp, src_url):
 def _safe_fetch(url):
     if url in url_cache:
         return url_cache[url]
+
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        r.raise_for_status()
-        result = _extract_text_and_match(r, url)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        result = _extract_text_and_match(resp, url)
         url_cache[url] = result
         return result
     except Exception:
         url_cache[url] = ("", None)
         return "", None
 
+# ──────────────── Main recursive crawler ───────────────
 def fetch_website_text(start_url: str) -> str:
     visited = set()
     collected = []
@@ -101,6 +103,9 @@ def fetch_website_text(start_url: str) -> str:
         if hit:
             return True
 
+        if depth == MAX_DEPTH:
+            return False
+
         soup = BeautifulSoup(resp.text, "html.parser")
         domain = urlparse(start_url).netloc
         links = []
@@ -110,13 +115,11 @@ def fetch_website_text(start_url: str) -> str:
             if not tag.has_attr(attr):
                 continue
             link = urljoin(url, tag[attr])
-            if urlparse(link).netloc != domain or link in visited:
+            if urlparse(link).netloc != domain:
                 continue
             links.append(link)
 
-        media_links = [l for l in links if l.lower().endswith((
-            ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif"
-        ))][:MAX_MEDIA_LINKS]
+        media_links = [l for l in links if l.lower().endswith((".pdf", ".jpg", ".jpeg", ".png"))][:MAX_MEDIA_LINKS]
         html_links = [l for l in links if l not in media_links][:MAX_HTML_LINKS]
 
         with ThreadPoolExecutor(max_workers=10) as ex:
