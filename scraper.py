@@ -194,7 +194,7 @@ def _extract_text_and_match(resp, src_url):
     ctype = resp.headers.get("content-type", "").lower()
     if "pdf" in ctype or src_url.lower().endswith(".pdf"):
         text = _pdf_bytes_to_text(resp.content)
-    elif "image" in ctype or src_url.lower().endswith((".jpg", ".jpeg", ".png")):
+    elif "image" in ctype or url.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif")):
         text = _image_bytes_to_text(resp.content)
     else:
         soup = BeautifulSoup(resp.text, "html.parser")
