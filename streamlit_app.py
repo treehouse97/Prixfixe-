@@ -13,13 +13,18 @@ from places_api import text_search_restaurants, place_details
 
 # ─────────────────── Google Sheets Setup ────────────────────
 scope = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"],
-    scopes=scope
-)
-client = gspread.authorize(credentials)
-SHEET_ID = "1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0"
-sheet = client.open_by_key(SHEET_ID).sheet1
+try:
+    credentials = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+    client = gspread.authorize(credentials)
+    SHEET_ID = "1mZymnpQ1l-lEqiwDnursBKN0Mh69L5GziXFyyM5nUI0"
+    sheet = client.open_by_key(SHEET_ID).sheet1
+except Exception as e:
+    st.error("🚫 Failed to load Google credentials or access Google Sheet.")
+    st.exception(e)
+    st.stop()
 
 # ─────────────────── Streamlit Setup ────────────────────────
 st.set_page_config("The Fixe", "🍽", layout="wide")
@@ -40,7 +45,12 @@ def canonical_group(label): return next((g for g, s in DEAL_GROUPS.items() if an
 def group_rank(g): return _DISPLAY_ORDER.index(g) if g in _DISPLAY_ORDER else len(_DISPLAY_ORDER)
 def safe_rerun(): (st.rerun if hasattr(st, "rerun") else st.experimental_rerun)()
 def clean_utf8(s): return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
-def load_lottie(path): return json.load(open(path)) if os.path.exists(path) else None
+def load_lottie(path): 
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
 def nice_types(tp): return [t.replace("_", " ").title() for t in tp if t not in {"restaurant", "food", "point_of_interest", "establishment", "store", "bar", "meal_takeaway", "meal_delivery"}][:3]
 def first_review(pid): return re.sub(r"\s+", " ", (place_details(pid).get("reviews") or [{}])[0].get("text", "")).strip()[:100] + "…"
 def review_link(pid): return f"https://search.google.com/local/reviews?placeid={pid}"
@@ -83,92 +93,3 @@ def store_rows(rows):
              snippet,review_link,types,location,rating,photo_ref)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows)
-
-def fetch_records(loc):
-    with sqlite3.connect(DB_FILE) as c:
-        return c.execute("""
-            SELECT name,address,website,label,snippet,review_link,
-                   types,rating,photo_ref
-            FROM restaurants WHERE has_prix_fixe=1 AND location=?
-        """, (loc,)).fetchall()
-
-def write_to_sheet(rows):
-    if not rows:
-        return
-    try:
-        existing = sheet.get_all_values()[1:]  # Skip header
-        existing_keys = set((r[0], r[1], r[8]) for r in existing)  # (name, address, location)
-
-        for r in rows:
-            key = (r[0], r[1], r[9])  # (name, address, location)
-            if key in existing_keys:
-                log.info(f"{r[0]} • skipped (already in Google Sheet)")
-                continue
-
-            summary = (r[5] or "")[:49000]  # Google Sheets cell limit
-            sheet.append_row([
-                r[0], r[1], r[2], r[4], summary,
-                r[6], r[7], r[8], r[9], str(r[10])
-            ], value_input_option="USER_ENTERED")
-            log.info(f"[SHEET SET] {r[0]}")
-    except Exception as e:
-        log.error(f"Sheet write error: {e}")
-
-def clear_sheet_except_header():
-    try:
-        sheet.resize(rows=1)  # Keep only the first row (header)
-        log.info("Sheet cleared (except header row).")
-    except Exception as e:
-        log.error(f"Failed to clear sheet: {e}")
-        st.error(f"Failed to clear sheet: {e}")
-
-def is_known(name, addr, loc):
-    try:
-        existing = sheet.get_all_values()[1:]
-        return (name, addr, loc) in {(r[0], r[1], r[8]) for r in existing}
-    except Exception as e:
-        log.error(f"Sheet read error: {e}")
-        return False
-
-def prioritize(places):
-    return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}) else 0)
-
-def process_place(place, loc):
-    name, addr = place["name"], place["vicinity"]
-    web = place.get("website") or place.get("menu_url")
-    rating, photo = place.get("rating"), place.get("photo_ref")
-    pid, g_types = place.get("place_id"), place.get("types", [])
-
-    if is_known(name, addr, loc):
-        log.info(f"{name} • skipped (already known in sheet)")
-        return None
-
-    with sqlite3.connect(DB_FILE) as c:
-        if c.execute("SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?", (name, addr, loc)).fetchone():
-            log.info(f"{name} • skipped (already processed)")
-            return None
-
-    try:
-        text = clean_utf8(fetch_website_text(web)) if web else ""
-        matched, lbl = detect_prix_fixe_detailed(text)
-        if matched:
-            snippet, link = first_review(pid), review_link(pid)
-            types = ", ".join(nice_types(g_types))
-            return (name, addr, web, 1, lbl, text, snippet, link, types, loc, rating, photo)
-        else:
-            log.info(f"{name} • skipped (no qualifying phrases found)")
-    except Exception as e:
-        log.info(f"{name} • skipped (error: {e})")
-    return None
-
-def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
-    chips = "".join(f'<span class="chip">{t}</span>' for t in (types_txt.split(", ") if types_txt else []))
-    photo_tag = f'<img src="https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo}&key={GOOGLE_API_KEY}">' if photo else ""
-    snippet_ht = f'<p class="snippet">💬 {snippet} <a href="{link}" target="_blank">Read&nbsp;more</a></p>' if snippet else ""
-    rating_ht = f'<div class="rate">{rating:.1f} / 5</div>' if rating else ""
-    return (
-        '<div class="card">' + photo_tag + '<div class="body">'
-        f'<span class="badge">{lbl}</span><div class="chips">{chips}</div>'
-        f'<div class="title">{name}</div>{snippet_ht}<div class="addr">{addr}</div>'
-        f'{rating_ht}<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
-    )
