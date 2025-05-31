@@ -9,9 +9,9 @@ import pytesseract
 import fitz  # PyMuPDF
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-MAX_MEDIA_LINKS = 5
-MAX_HTML_LINKS = 25
-MAX_DEPTH = 2
+MAX_MEDIA_LINKS = 8
+MAX_HTML_LINKS = 30
+MAX_DEPTH = 5
 
 PATTERNS = {
     "prix fixe":      r"prix[\s\-]*fixe",
