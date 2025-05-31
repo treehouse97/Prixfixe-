@@ -100,12 +100,8 @@ def _safe_fetch_and_match(url):
 # ──────────────── Public interface ───────────────────────
 def fetch_website_text(url: str) -> str:
     """
-    Crawl a restaurant website, extracting text from:
-    - the main page,
-    - internal HTML links,
-    - linked PDFs and JPG/PNG images (OCR),
-    - stopping early if a pattern is matched.
-    Returns all collected text.
+    Crawl the base page, run OCR on embedded <img> tags,
+    and crawl linked pages and media (PDF/JPG/PNG). Return all text.
     """
     visited = set()
     collected = ""
@@ -116,30 +112,56 @@ def fetch_website_text(url: str) -> str:
     except Exception:
         return collected
 
+    # Extract base HTML text
     base_text, hit = _extract_text_and_match(base_resp, url)
     collected += base_text
     if hit:
         return collected.strip()
 
+    # Parse HTML and process embedded images directly
     soup = BeautifulSoup(base_resp.text, "html.parser")
     base_domain = urlparse(url).netloc
 
+    print("[DEBUG] Running OCR on <img> elements in main page...")
+
+    for img_tag in soup.find_all("img"):
+        img_url = None
+        for attr in ["src", "data-src", "data-original"]:
+            if img_tag.has_attr(attr):
+                img_url = urljoin(url, img_tag[attr])
+                break
+        if not img_url or img_url in visited:
+            continue
+        visited.add(img_url)
+
+        try:
+            img_resp = requests.get(img_url, headers=HEADERS, timeout=10)
+            img_resp.raise_for_status()
+            if "image" in img_resp.headers.get("content-type", ""):
+                text = _image_bytes_to_text(img_resp.content)
+                print("[OCR TEXT]", text)
+                collected += " " + text
+                for label, pattern in PATTERNS.items():
+                    if re.search(pattern, text, re.IGNORECASE):
+                        return collected.strip()
+        except Exception:
+            continue
+
+    # Process <a> and additional media links
     html_links, media_links = [], []
 
-    for tag in soup.find_all(["a", "img"]):
-        attrs = ["href"] if tag.name == "a" else ["src", "data-src", "data-original"]
-        link = None
-        for attr in attrs:
-            if tag.has_attr(attr):
-                link = urljoin(url, tag[attr])
-                break
-        if not link or urlparse(link).netloc != base_domain or link in visited:
+    for tag in soup.find_all(["a"]):
+        link = tag.get("href")
+        if not link:
             continue
-        visited.add(link)
-        if link.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
-            media_links.append(link)
-        elif tag.name == "a":
-            html_links.append(link)
+        full_url = urljoin(url, link)
+        if urlparse(full_url).netloc != base_domain or full_url in visited:
+            continue
+        visited.add(full_url)
+        if full_url.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
+            media_links.append(full_url)
+        else:
+            html_links.append(full_url)
 
     link_queue = media_links[:5] + html_links
 
