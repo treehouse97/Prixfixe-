@@ -11,7 +11,7 @@ from io import BytesIO
 
 # ────────────────── keyword patterns ─────────────────────────────────────────
 PATTERNS = {
-    "prix fixe":      r"prix[\s\-]*fixe",
+    "prix fixe":      r"prix[\s\u2000-\u200B\u202F\u205F\u3000\u00A0\-–—]*fixe",
     "pre fixe":       r"pre[\s\-]*fixe",
     "price fixed":    r"price[\s\-]*fixed",
     "3-course":       r"(three|3)[\s\-]*(course|courses)",
