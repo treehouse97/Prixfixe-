@@ -49,6 +49,9 @@ if "db_file" not in st.session_state:
     st.session_state["db_file"] = os.path.join(tempfile.gettempdir(), f"prix_fixe_{uuid.uuid4().hex}.db")
     st.session_state["searched"] = False
 
+if "places_cache" not in st.session_state:
+    st.session_state["places_cache"] = {}
+
 DB_FILE = st.session_state["db_file"]
 
 SCHEMA = """
@@ -117,8 +120,16 @@ def clear_sheet_except_header():
         log.info("Sheet cleared (except header row).")
     except Exception as e:
         log.error(f"Failed to clear sheet: {e}")
-        
         st.error(f"Failed to clear sheet: {e}")
+
+def is_known(name, addr, loc):
+    try:
+        existing = sheet.get_all_values()[1:]
+        return (name, addr, loc) in {(r[0], r[1], r[8]) for r in existing}
+    except Exception as e:
+        log.error(f"Sheet read error: {e}")
+        return False
+
 def prioritize(places):
     return sorted(places, key=lambda p: -1 if any(k in p.get("name", "").lower() for k in {"bistro", "brasserie", "trattoria", "tavern", "grill", "prix fixe", "pre fixe", "ristorante"}) else 0)
 
@@ -127,6 +138,10 @@ def process_place(place, loc):
     web = place.get("website") or place.get("menu_url")
     rating, photo = place.get("rating"), place.get("photo_ref")
     pid, g_types = place.get("place_id"), place.get("types", [])
+
+    if is_known(name, addr, loc):
+        log.info(f"{name} • skipped (already known in sheet)")
+        return None
 
     with sqlite3.connect(DB_FILE) as c:
         if c.execute("SELECT 1 FROM restaurants WHERE name=? AND address=? AND location=?", (name, addr, loc)).fetchone():
@@ -157,87 +172,3 @@ def build_card(name, addr, web, lbl, snippet, link, types_txt, rating, photo):
         f'<div class="title">{name}</div>{snippet_ht}<div class="addr">{addr}</div>'
         f'{rating_ht}<a href="{web}" target="_blank">Visit&nbsp;Site</a></div></div>'
     )
-
-st.markdown("""
-<style>
-html,body,[data-testid="stAppViewContainer"]{background:#f8f9fa!important;color:#111!important;}
-.stButton>button{background:#212529!important;color:#fff!important;border-radius:4px!important;font-weight:600!important;}
-.stButton>button:hover{background:#343a40!important;}
-.stTextInput input{background:#fff!important;color:#111!important;border:1px solid #ced4da!important;}
-.card{border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.1);overflow:hidden;background:#fff;margin-bottom:24px}
-.card img{width:100%;height:180px;object-fit:cover}
-.body{padding:12px 16px}.title{font-size:1.05rem;font-weight:600;margin-bottom:2px;color:#111;}
-.snippet{font-size:.83rem;color:#444;margin:.35rem 0 .5rem}.snippet a{color:#0d6efd;text-decoration:none}
-.chips{margin-bottom:4px}.chip{display:inline-block;background:#e1e5ea;color:#111;border-radius:999px;
-padding:2px 8px;font-size:.72rem;margin-right:4px;margin-bottom:4px}
-.addr{font-size:.9rem;color:#555;margin-bottom:6px}.rate{font-size:.9rem;color:#f39c12;margin-bottom:8px}
-.badge{display:inline-block;background:#e74c3c;color:#fff;border-radius:4px;
-padding:2px 6px;font-size:.75rem;margin-bottom:6px;margin-right:6px}
-</style>
-""", unsafe_allow_html=True)
-
-ensure_schema()
-
-if st.button("Reset Database"):
-    init_db()
-    st.session_state["searched"] = False
-    safe_rerun()
-    
-if st.button("Clear Google Sheet (except header)"):
-    clear_sheet_except_header()
-    
-location = st.text_input("Enter a town, hamlet, or neighborhood", "Islip, NY")
-selected_deals = st.multiselect("Deal type (optional)", ["Any deal"] + _DISPLAY_ORDER, default=["Any deal"])
-def want_group(g): return ("Any deal" in selected_deals) or (g in selected_deals)
-
-def run_search(limit):
-    status, anim = st.empty(), st.empty()
-    status.markdown("### Please wait for The Fixe… *(we’re cooking)*", unsafe_allow_html=True)
-    cook = load_lottie("Animation - 1748132250829.json")
-    if cook:
-        with anim.container():
-            st_lottie(cook, height=260, key=f"cook-{time.time()}")
-
-    try:
-        raw = text_search_restaurants(location)
-        cand = prioritize([p for p in raw if p.get("website") or p.get("menu_url")])
-        if limit: cand = cand[:limit]
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            rows = list(ex.map(lambda p: process_place(p, location), cand))
-        valid = [r for r in rows if r]
-        store_rows(valid)
-        write_to_sheet(valid)
-    except Exception as e:
-        st.error(f"Search failed: {e}")
-
-    status.markdown("### The Fixe is in. Scroll below to see the deals.", unsafe_allow_html=True)
-    done = load_lottie("Finished.json")
-    if done:
-        with anim.container():
-            st_lottie(done, height=260, key=f"done-{time.time()}")
-
-if st.button("Search"):
-    st.session_state.update(searched=True, expanded=False)
-    run_search(limit=25)
-
-if st.session_state.get("searched"):
-    recs = fetch_records(location)
-    if recs:
-        grp = {}
-        for r in recs:
-            g = canonical_group(r[3])
-            if want_group(g): grp.setdefault(g, []).append(r)
-        for g in sorted(grp, key=group_rank):
-            st.subheader(g)
-            cols = st.columns(3)
-            for i, (n, a, w, _, snip, lnk, ty, rating, photo) in enumerate(grp[g]):
-                with cols[i % 3]:
-                    st.markdown(build_card(n, a, w, g, snip, lnk, ty, rating, photo), unsafe_allow_html=True)
-        if not st.session_state.get("expanded"):
-            st.markdown("---")
-            if st.button("Expand Search"):
-                st.session_state["expanded"] = True
-                run_search(limit=None)
-                safe_rerun()
-    else:
-        st.info("No prix fixe menus stored yet for this location.")
