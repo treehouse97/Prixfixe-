@@ -86,7 +86,7 @@ def _safe_fetch_and_match(url):
 def fetch_website_text(url: str) -> str:
     """
     Crawl the start page plus internal links; include text from
-    up to 3 linked PDFs and images.  Return **all** collected text.
+    up to 3 linked PDFs and images. Return **all** collected text.
     Stop early if any page (HTML, PDF, or Image) matches a pattern.
     """
     visited, collected = set(), ""
@@ -106,24 +106,19 @@ def fetch_website_text(url: str) -> str:
     base_dom = urlparse(url).netloc
 
     html_links, media_links = [], []
-    # Extract links from <a href=...> and <img src=...>
-for tag in soup.find_all(["a", "img"]):
-    link_attr = "href" if tag.name == "a" else "src"
-    if tag.has_attr(link_attr):
+    for tag in soup.find_all(["a", "img"]):
+        link_attr = "href" if tag.name == "a" else "src"
+        if not tag.has_attr(link_attr):
+            continue
+
         link = urljoin(url, tag[link_attr])
         if urlparse(link).netloc != base_dom or link in visited:
             continue
         visited.add(link)
+
         if link.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
             media_links.append(link)
         elif tag.name == "a":
-            html_links.append(link)
-        if urlparse(link).netloc != base_dom or link in visited:
-            continue
-        visited.add(link)
-        if link.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
-            media_links.append(link)
-        else:
             html_links.append(link)
 
     media_links = media_links[:5]
