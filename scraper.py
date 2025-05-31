@@ -128,7 +128,9 @@ def fetch_website_text(start_url: str) -> str:
                 continue
             links.append(link)
 
-        media_links = [l for l in links if l.lower().endswith((".pdf", ".jpg", ".jpeg", ".png"))][:MAX_MEDIA_LINKS]
+        media_links = [l for l in links if l.lower().endswith((
+        ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif"
+        ))][:MAX_MEDIA_LINKS]
         html_links = [l for l in links if l not in media_links][:MAX_HTML_LINKS]
 
         with ThreadPoolExecutor(max_workers=10) as ex:
