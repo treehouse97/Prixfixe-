@@ -1,15 +1,15 @@
-import re
-import requests
+import re, requests, hashlib
 from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from PIL import Image
 from io import BytesIO
+from typing import Tuple, List
+
+from bs4 import BeautifulSoup
+from PIL import Image
 import pytesseract
 import fitz  # PyMuPDF
-import hashlib
 
-# ──────────────── Keyword patterns ───────────────────────
+# ─────────────── Keyword patterns ──────────────────────────
 PATTERNS = {
     "prix fixe":      r"p[\W_]*r[\W_]*i[\W_]*x[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
     "pre fixe":       r"p[\W_]*r[\W_]*e[\W_]*[\s\-]*f[\W_]*i[\W_]*x[\W_]*e?",
@@ -25,13 +25,13 @@ PATTERNS = {
     "weekly special": r"(weekly|weeknight|weekend)[\s\-]*(specials?|menu)",
     "combo deal":     r"(combo|combination)[\s\-]*(deal|meal|menu)",
     "value menu":     r"value[\s\-]*(menu|deal|offer)",
-    "deals":          r"\bdeals?\b"
+    "deals":          r"\bdeals?\b",
 }
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-url_cache = {}
+url_cache: dict[str, str] = {}
 
-# ──────────────── Core utilities ─────────────────────────
+# ─────────────── Utility converters ───────────────────────
 def _pdf_bytes_to_text(data: bytes) -> str:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -46,43 +46,43 @@ def _image_bytes_to_text(data: bytes) -> str:
     except Exception:
         return ""
 
-def _extract_text_and_match(resp, src_url):
+def _extract_text(resp, src_url) -> str:
     ctype = resp.headers.get("content-type", "").lower()
     if "pdf" in ctype or src_url.lower().endswith(".pdf"):
-        text = _pdf_bytes_to_text(resp.content)
+        return _pdf_bytes_to_text(resp.content)
     elif "image" in ctype or src_url.lower().endswith((".jpg", ".jpeg", ".png")):
-        text = _image_bytes_to_text(resp.content)
+        return _image_bytes_to_text(resp.content)
     else:
         soup = BeautifulSoup(resp.text, "html.parser")
-        text = " ".join(tag.get_text(" ", strip=True).lower()
-                        for tag in soup.find_all(["h1", "h2", "h3", "p", "li", "div"]))
+        return " ".join(
+            tag.get_text(" ", strip=True).lower()
+            for tag in soup.find_all(["h1", "h2", "h3", "p", "li", "div"])
+        )
 
-    for label, pattern in PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return text, label
-    return text, None
-
-def _safe_fetch_and_match(url):
+def _safe_fetch(url: str) -> str:
     if url in url_cache:
         return url_cache[url]
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
         r.raise_for_status()
-        result = _extract_text_and_match(r, url)
-        url_cache[url] = result
-        return result
+        txt = _extract_text(r, url)
+        url_cache[url] = txt
+        return txt
     except Exception:
-        url_cache[url] = ("", None)
-        return "", None
+        url_cache[url] = ""
+        return ""
 
 def _hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
-# ──────────────── Main function ──────────────────────────
-def fetch_website_text(url: str) -> str:
-    visited = set()
-    seen_hashes = set()
-    collected = []
+# ─────────────── Main scraper routine ──────────────────────
+def fetch_website_text(url: str, *, dedupe: bool = False) -> str:
+    """
+    Crawl `url`, pull down HTML, PDFs, and first few images linked on the same
+    domain, then aggregate their visible text. When `dedupe=True`, identical
+    lines are collapsed to limit size before returning.
+    """
+    visited, seen_hashes, collected = set(), set(), []
 
     try:
         base_resp = requests.get(url, headers=HEADERS, timeout=10)
@@ -90,19 +90,16 @@ def fetch_website_text(url: str) -> str:
     except Exception:
         return ""
 
-    base_text, hit = _extract_text_and_match(base_resp, url)
+    base_text = _extract_text(base_resp, url)
     h = _hash(base_text)
     if base_text and h not in seen_hashes:
         collected.append(base_text)
         seen_hashes.add(h)
-    if hit:
-        return " ".join(collected).strip()
 
     soup = BeautifulSoup(base_resp.text, "html.parser")
     base_domain = urlparse(url).netloc
 
     html_links, media_links = [], []
-
     for tag in soup.find_all(["a", "img"]):
         attr = "href" if tag.name == "a" else "src"
         if not tag.has_attr(attr):
@@ -116,23 +113,36 @@ def fetch_website_text(url: str) -> str:
         elif tag.name == "a":
             html_links.append(link)
 
-    link_queue = media_links[:5] + html_links
+    link_queue = media_links[:5] + html_links  # small breadth‑first slice
 
     with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {ex.submit(_safe_fetch_and_match, link): link for link in link_queue}
-        for future in as_completed(futures):
-            sub_text, hit = future.result()
+        futures = {ex.submit(_safe_fetch, link): link for link in link_queue}
+        for fut in as_completed(futures):
+            sub_text = fut.result()
             h = _hash(sub_text)
             if sub_text and h not in seen_hashes:
                 collected.append(sub_text)
                 seen_hashes.add(h)
-            if hit:
-                break
 
-    return " ".join(collected).strip()
+    combined = "\n".join(collected).strip()
+    if not dedupe:
+        return combined
 
-# ──────────────── Pattern Detection ──────────────────────
-def detect_prix_fixe_detailed(text: str):
+    # simple intra‑page deduplication
+    lines: List[str] = [
+        ln.strip() for ln in combined.splitlines() if ln.strip()
+    ]
+    uniq, seen_lines = [], set()
+    for ln in lines:
+        sig = ln.lower()
+        if sig in seen_lines:
+            continue
+        seen_lines.add(sig)
+        uniq.append(ln)
+    return "\n".join(uniq)
+
+# ─────────────── Pattern detection (single place) ─────────
+def detect_prix_fixe_detailed(text: str) -> Tuple[bool, str]:
     for label, pattern in PATTERNS.items():
         if re.search(pattern, text, re.IGNORECASE):
             return True, label
